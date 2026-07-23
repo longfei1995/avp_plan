@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package avp.planning.v1;
+
+// 车辆相关配置
+message VehicleConfig {
+  double length_m = 1; 
+  double width_m = 2; 
+  double wheelbase_m = 3; 
+  double max_speed_mps = 4; 
+  double max_acceleration_mps2 = 5; 
+  double max_deceleration_mps2 = 6;         
+  double max_curvature_1pm = 7; 
+  double safety_margin_m = 8; // 车辆轮廓之外额外预留的安全距离，单位：米
+                              // 可用于碰撞检测、障碍物膨胀或安全走廊计算
+}
+
+// 规划器算法相关配置
+message PlannerConfig {
+  double horizon_s = 1; // 规划时间域长度，单位：秒
+                        // 表示规划器向未来规划多长时间
+                        
+  double time_step_s = 2; // 轨迹离散时间间隔，单位：秒
+                          // 轨迹点数量通常约为 horizon_s / time_step_s
+
+  double path_step_m = 3; // 路径离散采样间隔，单位：米
+                          // 用于生成或重采样空间路径点
+
+  double input_max_age_s = 4; // 输入数据允许的最大时间延迟，单位：秒
+                              // 当定位、障碍物或其他输入数据超过该时限时，可认为数据已过期
+
+  int32 path_coupling_iterations = 5; // 路径耦合优化的最大迭代次数
+                                      // 可用于路径平滑、碰撞约束或多模块交替优化
+}
+
+// 规划器运行时总配置
+message PlannerRuntimeConfig {
+  VehicleConfig vehicle = 1; // 车辆参数配置
+
+  PlannerConfig planner = 2; // 规划器算法参数配置
+}

@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package avp.planning.v1;
+
+// 集成边界拥有的线协议契约。生成的绑定代码不提交，由使用方按需启用依赖。
+message Header { string frame_id = 1; uint64 timestamp_ns = 2; uint64 sequence_id = 3; }
+message Vec2 { double x_m = 1; double y_m = 2; }
+message Pose2D { Vec2 position = 1; double yaw_rad = 2; }
+message EgoState { Pose2D pose = 1; double speed_mps = 2; double acceleration_mps2 = 3; }
+message PredictionPoint { uint64 timestamp_ns = 1; Pose2D pose = 2; double speed_mps = 3; }
+message Obstacle {
+  string id = 1;
+  reserved 2;
+  reserved "radius_m";
+  double confidence = 3;
+  repeated PredictionPoint prediction = 4;
+  double length_m = 5;
+  double width_m = 6;
+}
+message Lane { string id = 1; repeated Vec2 centerline = 2; repeated string successor_ids = 3; bool closed = 4; }
+message ParkingSpot { string id = 1; Pose2D entry_pose = 2; Pose2D target_pose = 3; }
+message MapSnapshot { repeated Lane lanes = 1; repeated ParkingSpot parking_spots = 2; }
+message PlanningRequest { Header header = 1; EgoState ego = 2; string target_parking_spot_id = 3; MapSnapshot map = 4; repeated Obstacle obstacles = 5; }
+message TrajectoryPoint { Pose2D pose = 1; double curvature_1pm = 2; double speed_mps = 3; double acceleration_mps2 = 4; double relative_time_s = 5; }
+message PlanningResponse { Header header = 1; uint32 status = 2; string message = 3; repeated TrajectoryPoint trajectory = 4; repeated string diagnostics = 5; }

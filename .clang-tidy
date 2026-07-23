@@ -1,0 +1,37 @@
+Checks: >
+  -*
+  ,bugprone-*
+  ,-bugprone-easily-swappable-parameters
+  ,-bugprone-narrowing-conversions
+  ,-bugprone-macro-parentheses
+  ,cppcoreguidelines-*
+  ,-cppcoreguidelines-avoid-magic-numbers
+  ,-cppcoreguidelines-owning-memory
+  ,-cppcoreguidelines-pro-type-reinterpret-cast
+  ,-cppcoreguidelines-pro-bounds-array-to-pointer-decay
+  ,-cppcoreguidelines-pro-bounds-pointer-arithmetic
+  ,-cppcoreguidelines-non-private-member-variables-in-classes
+  ,-cppcoreguidelines-macro-usage
+  ,modernize-*
+  ,-modernize-use-trailing-return-type
+  ,-modernize-use-designated-initializers
+  ,-modernize-concat-nested-namespaces
+  ,-modernize-use-nodiscard
+  ,-modernize-use-if-constexpr
+  ,-modernize-use-inline-variables
+  ,-modernize-use-structured-bindings
+  ,-modernize-use-std-filesystem
+  ,-modernize-use-ranges
+  ,-modernize-use-starts-ends-with
+  ,-modernize-use-using-enum
+  ,performance-*
+  ,readability-container-size-empty
+  ,readability-redundant-smartptr-get
+  ,readability-redundant-string-cstr
+  ,readability-simplify-boolean-expr
+  ,readability-misleading-indentation
+  ,readability-braces-around-statements
+
+WarningsAsErrors: "bugprone-*, performance-*"
+HeaderFilterRegex: "^(include|src)/avp/.*"
+FormatStyle: file
