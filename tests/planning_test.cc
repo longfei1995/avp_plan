@@ -7,6 +7,8 @@
 #include "planning/planner.h"
 #include "speed/speed_planner.h"
 
+#include "collision_test_cases.h"
+
 namespace {
 void Check(bool condition, const char* message) {
   if (!condition) { std::cerr << "FAILED: " << message << '\n'; std::exit(1); }
@@ -23,28 +25,12 @@ avp::PlanningRequest MakeRequest() {
 }
 
 void TestOrientedRectangleCollision() {
-  avp::VehicleConfig vehicle;
-  vehicle.length_m = 4.0;
-  vehicle.width_m = 2.0;
-  vehicle.safety_margin_m = 0.0;
-  const avp::Pose2d pose{{0.0, 0.0}, 0.0};
-
-  Check(avp::IsVehicleObstacleCollision(pose, vehicle, {{2.5, 0.0}, 0.0}, 2.0, 1.0),
-        "axis-aligned rectangles must collide when they overlap");
-  Check(!avp::IsVehicleObstacleCollision(pose, vehicle, {{3.5, 0.0}, 0.0}, 2.0, 1.0),
-        "axis-aligned rectangles must not collide when separated");
-  Check(avp::IsVehicleObstacleCollision(pose, vehicle, {{2.5, 0.0}, avp::kPi / 4.0}, 4.0,
-                                         2.0),
-        "rotated rectangles must collide when their OBBs overlap");
-  Check(!avp::IsVehicleObstacleCollision(pose, vehicle, {{3.7, 2.3}, avp::kPi / 4.0}, 4.0,
-                                          2.0),
-        "SAT must separate rotated rectangles despite overlapping AABBs");
-  Check(avp::IsVehicleObstacleCollision(pose, vehicle, {{3.0, 0.0}, 0.0}, 2.0, 1.0),
-        "rectangle boundary contact must count as a collision");
-
-  vehicle.safety_margin_m = 0.6;
-  Check(avp::IsVehicleObstacleCollision(pose, vehicle, {{3.5, 0.0}, 0.0}, 2.0, 1.0),
-        "safety margin must inflate the vehicle collision envelope");
+  for (const avp::test::CollisionTestCase& test_case : avp::test::CollisionTestCases()) {
+    const bool collision = avp::IsVehicleObstacleCollision(
+        test_case.vehicle_pose, test_case.vehicle, test_case.obstacle_pose,
+        test_case.obstacle_length_m, test_case.obstacle_width_m);
+    Check(collision == test_case.expected_collision, test_case.failure_message);
+  }
 }
 
 void TestSlLattice() {
@@ -142,6 +128,7 @@ int main() {
   avp::PlanningRequest blocked = request;
   blocked.obstacles.push_back(
       {"wall", 1.0, 6.0, 1.0, {{{1'000'000'000, {{5.0, 0.0}, 0.0}, 0.0}}}});
-  Check(planner.Plan(blocked).status == avp::PlanningStatus::kNoSafeTrajectory, "blocked route should fall back");
+  Check(planner.Plan(blocked).status == avp::PlanningStatus::kNoSafeTrajectory,
+        "blocked route should fall back");
   std::cout << "avp_planning_test passed\n";
 }

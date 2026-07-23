@@ -18,6 +18,31 @@ ctest --test-dir build --output-on-failure
 
 `CMakePresets.json` 还提供 `sanitize` 预设。代码按 Google C++ Style 编写，`.clang-format` 与 `.clang-tidy` 已纳入仓库。
 
+### 碰撞几何可视化
+
+`collision_visualizer` 是一个手动运行的调试工具：它将 OBB/SAT 的六个单元测试场景绘制为
+2×3 交互式窗口。蓝色实线表示自车真实矩形，蓝色虚线表示安全边距膨胀后的碰撞包络；
+障碍物为红色时表示碰撞、绿色时表示分离。该工具不属于 CTest，也不会在默认构建中引入
+图形依赖。
+
+启用该工具前，需要将 Matplot++ 以 CMake package 形式安装（使
+`find_package(Matplot++ CONFIG REQUIRED)` 可用），并安装带桌面终端的 Gnuplot。例如 Debian/Ubuntu：
+
+```bash
+sudo apt install gnuplot
+```
+
+随后配置、构建并启动窗口：
+
+```bash
+cmake --preset visualize
+cmake --build --preset visualize --target collision_visualizer
+./build/visualize/tools/collision_visualizer
+```
+
+若未安装 Matplot++ 或 Gnuplot，只有启用 `AVP_BUILD_VISUALIZERS=ON` 的配置会失败；常规测试构建
+不受影响。
+
 ## 从哪里开始读
 
 生产集成时的入口是 [`Planner::Plan`](src/planning/planner.cc)；库本身没有

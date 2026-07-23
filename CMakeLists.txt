@@ -5,6 +5,7 @@ project(avp_planning VERSION 0.1.0 LANGUAGES CXX)
 # ========== 构建选项（可通过命令行 -D 或 CMakePresets 覆盖） ==========
 # option 定义布尔型缓存开关，格式：option(变量名 说明文字 默认值)
 option(AVP_BUILD_TESTS "构建规划器测试" ON)
+option(AVP_BUILD_VISUALIZERS "构建规划器可视化调试工具" OFF)
 option(AVP_ENABLE_SANITIZERS "启用地址与未定义行为消毒器" OFF)
 option(AVP_ENABLE_CLANG_TIDY "安装 clang-tidy 时运行静态检查" ON)
 
@@ -54,8 +55,10 @@ endif()
 # ========== 单元测试 ==========
 if(AVP_BUILD_TESTS)
   enable_testing()
-  add_executable(avp_planning_test tests/planning_test.cc)
-  target_link_libraries(avp_planning_test PRIVATE avp::planning)
-  target_compile_options(avp_planning_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME avp_planning_test COMMAND avp_planning_test)
+  add_subdirectory(tests)
+endif()
+
+# ========== 可视化调试工具 ==========
+if(AVP_BUILD_VISUALIZERS)
+  add_subdirectory(tools)
 endif()

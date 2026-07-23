@@ -25,6 +25,7 @@ Checks: >
   ,-modernize-use-starts-ends-with
   ,-modernize-use-using-enum
   ,performance-*
+  ,-performance-enum-size
   ,readability-container-size-empty
   ,readability-redundant-smartptr-get
   ,readability-redundant-string-cstr
