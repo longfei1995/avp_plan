@@ -4,11 +4,12 @@
 
 namespace avp {
 namespace {
+// 数值是否有效（不是无穷大，不是nan)
 bool IsFinite(double value) { return std::isfinite(value); }
 bool IsValidPose(const Pose2d& pose) {
   return IsFinite(pose.position.x) && IsFinite(pose.position.y) && IsFinite(pose.yaw);
 }
-}  // 匿名命名空间
+}  // namespace
 
 bool LocalizationAdapter::Adapt(const PlanningRequest& request, PlanningFrame* frame,
                                 std::string* error) const {
@@ -111,4 +112,4 @@ bool PlanningFrameAdapter::Adapt(const PlanningRequest& request, const VehicleCo
          perception_adapter_.Adapt(request, frame, error) &&
          map_adapter_.Adapt(request, frame, error) && task_adapter_.Adapt(request, frame, error);
 }
-}  // avp 命名空间
+}  // namespace avp

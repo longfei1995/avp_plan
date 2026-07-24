@@ -9,7 +9,8 @@ Vec2 PositionAtS(const std::vector<PathPoint>& path, double s) {
   for (size_t i = 1; i < path.size(); ++i) {
     if (s <= path[i].s) {
       const double span = path[i].s - path[i - 1].s;
-      return Interpolate(path[i - 1].position, path[i].position, span < 1e-6 ? 0.0 : (s - path[i - 1].s) / span);
+      return Interpolate(path[i - 1].position, path[i].position,
+                         span < 1e-6 ? 0.0 : (s - path[i - 1].s) / span);
     }
   }
   return path.back().position;
@@ -28,16 +29,20 @@ double CurvatureAtS(const std::vector<PathPoint>& path, double s) {
 }
 PredictionPoint PredictAt(const Obstacle& obstacle, uint64_t timestamp_ns) {
   PredictionPoint result = obstacle.prediction.front();
-  for (const PredictionPoint& point : obstacle.prediction) { if (point.timestamp_ns > timestamp_ns) break; result = point; }
+  for (const PredictionPoint& point : obstacle.prediction) {
+    if (point.timestamp_ns > timestamp_ns) break;
+    result = point;
+  }
   return result;
 }
-bool IsCollisionFree(const PlanningFrame& frame, const std::vector<TimedTrajectoryPoint>& trajectory) {
+bool IsCollisionFree(const PlanningFrame& frame,
+                     const std::vector<TimedTrajectoryPoint>& trajectory) {
   for (const TimedTrajectoryPoint& point : trajectory) {
-    const uint64_t timestamp = frame.header.timestamp_ns + static_cast<uint64_t>(point.relative_time_s * 1e9);
+    const uint64_t timestamp =
+        frame.header.timestamp_ns + static_cast<uint64_t>(point.relative_time_s * 1e9);
     for (const Obstacle& obstacle : frame.obstacles) {
-      if (IsVehicleObstacleCollision(point.pose, frame.vehicle,
-                                     PredictAt(obstacle, timestamp).pose, obstacle.length_m,
-                                     obstacle.width_m)) {
+      if (IsVehicleObstacleCollision(point.pose, frame.vehicle, PredictAt(obstacle, timestamp).pose,
+                                     obstacle.length_m, obstacle.width_m)) {
         return false;
       }
     }
@@ -47,19 +52,22 @@ bool IsCollisionFree(const PlanningFrame& frame, const std::vector<TimedTrajecto
 std::vector<TimedTrajectoryPoint> MakeStopTrajectory(const PlanningFrame& frame) {
   std::vector<TimedTrajectoryPoint> result;
   const double deceleration = std::max(0.1, frame.vehicle.max_deceleration_mps2);
-  const double stop_time = std::max(frame.config.time_step_s, std::abs(frame.ego.speed_mps) / deceleration);
+  const double stop_time =
+      std::max(frame.config.time_step_s, std::abs(frame.ego.speed_mps) / deceleration);
   for (double t = 0.0; t <= stop_time + 1e-9; t += frame.config.time_step_s) {
     const double speed = std::max(0.0, frame.ego.speed_mps - deceleration * t);
     const double distance = frame.ego.speed_mps * t - 0.5 * deceleration * t * t;
-    const Vec2 position{frame.ego.pose.position.x + std::cos(frame.ego.pose.yaw) * std::max(0.0, distance),
-                        frame.ego.pose.position.y + std::sin(frame.ego.pose.yaw) * std::max(0.0, distance)};
+    const Vec2 position{
+        frame.ego.pose.position.x + std::cos(frame.ego.pose.yaw) * std::max(0.0, distance),
+        frame.ego.pose.position.y + std::sin(frame.ego.pose.yaw) * std::max(0.0, distance)};
     result.push_back({{position, frame.ego.pose.yaw}, 0.0, speed, -deceleration, t});
   }
   return result;
 }
-}  // 匿名命名空间
+}  // namespace
 
-Planner::Planner(VehicleConfig vehicle, PlannerConfig config) : vehicle_(vehicle), config_(config) {}
+Planner::Planner(VehicleConfig vehicle, PlannerConfig config)
+    : vehicle_(vehicle), config_(config) {}
 
 PlanningResponse Planner::Plan(const PlanningRequest& request) const {
   // 始终回传请求头，便于上层将成功或失败结果与原始请求关联。
@@ -67,18 +75,21 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
   response.header = request.header;
 
   // 在进入各规划算法前，统一校验外部输入并归一化为内部 PlanningFrame。
-  // 适配失败时没有可信的规划上下文，直接将适配器给出的原因返回给调用方。
   PlanningFrame frame;
   std::string error;
   if (!adapter_.Adapt(request, vehicle_, config_, &frame, &error)) {
-    response.status = PlanningStatus::kInvalidInput; response.message = error; return response;
+    response.status = PlanningStatus::kInvalidInput;
+    response.message = error;
+    return response;
   }
 
   // 全局规划先在车道图中找到通往车位入口的路线，并用 Hybrid A* 补齐到目标车位的连接。
   // 这一步失败意味着没有可供局部规划器跟随的参考线。
   GlobalRoute route;
   if (!global_planner_.Plan(frame, &route, &error)) {
-    response.status = PlanningStatus::kNoRoute; response.message = error; return response;
+    response.status = PlanningStatus::kNoRoute;
+    response.message = error;
+    return response;
   }
 
   // 路径与速度相互依赖：路径避障需要预计到达时刻，速度规划又以路径弧长为输入。
@@ -89,14 +100,18 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
   std::vector<SpeedPoint> speed;
   for (int iteration = 0; iteration < frame.config.path_coupling_iterations; ++iteration) {
     if (!local_planner_.Plan(frame, route, arrivals, &path, &error) ||
-        !speed_planner_.Plan(frame, path, &speed, &error)) break;
+        !speed_planner_.Plan(frame, path, &speed, &error))
+      break;
 
     // 对每个路径弧长 s，取速度剖面中第一个到达或越过该位置的时刻。
     // 若该轮速度剖面未覆盖路径末端，则保守地使用整个规划时域末尾。
     arrivals.assign(path.size(), frame.config.horizon_s);
     for (size_t i = 0; i < path.size(); ++i) {
       for (const SpeedPoint& point : speed) {
-        if (point.s + 1e-6 >= path[i].s) { arrivals[i] = point.time_s; break; }
+        if (point.s + 1e-6 >= path[i].s) {
+          arrivals[i] = point.time_s;
+          break;
+        }
       }
     }
   }
@@ -109,7 +124,8 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     response.status = PlanningStatus::kNoSafeTrajectory;
     response.message = error.empty() ? "no feasible local path or speed profile" : error;
     response.diagnostics.push_back("fallback=emergency_stop");
-    response.diagnostics.push_back(stop_is_safe ? "stop_collision_free=true" : "stop_collision_free=false");
+    response.diagnostics.push_back(stop_is_safe ? "stop_collision_free=true"
+                                                : "stop_collision_free=false");
     return response;
   }
 
@@ -118,8 +134,10 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
   response.trajectory.reserve(speed.size());
   for (const SpeedPoint& point : speed) {
     response.trajectory.push_back({{PositionAtS(path, point.s), YawAtS(path, point.s)},
-                                   CurvatureAtS(path, point.s), point.speed_mps,
-                                   point.acceleration_mps2, point.time_s});
+                                   CurvatureAtS(path, point.s),
+                                   point.speed_mps,
+                                   point.acceleration_mps2,
+                                   point.time_s});
   }
 
   // 局部路径和速度规划各自做过离散碰撞检查，但合成后仍需以最终轨迹逐点校验，作为
@@ -129,8 +147,9 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     response.status = PlanningStatus::kNoSafeTrajectory;
     response.message = "post-plan collision validation failed";
     response.diagnostics.push_back("fallback=emergency_stop");
-    response.diagnostics.push_back(IsCollisionFree(frame, response.trajectory) ?
-                                  "stop_collision_free=true" : "stop_collision_free=false");
+    response.diagnostics.push_back(IsCollisionFree(frame, response.trajectory)
+                                       ? "stop_collision_free=true"
+                                       : "stop_collision_free=false");
     return response;
   }
 
@@ -142,4 +161,4 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
   response.diagnostics.push_back("speed=ST_DP");
   return response;
 }
-}  // avp 命名空间
+}  // namespace avp
