@@ -1,6 +1,7 @@
 #include "interfaces/adapters.h"
 
 #include <cmath>
+#include <unordered_set>
 
 namespace avp {
 namespace {
@@ -57,9 +58,41 @@ bool MapAdapter::Adapt(const PlanningRequest& request, PlanningFrame* frame,
     *error = "at least one lane is required";
     return false;
   }
+  std::unordered_set<std::string> lane_ids;
   for (const Lane& lane : request.map.lanes) {
     if (lane.id.empty() || lane.centerline.size() < 2) {
       *error = "every lane needs an id and two centerline points";
+      return false;
+    }
+    if (!lane_ids.insert(lane.id).second) {
+      *error = "lane ids must be unique";
+      return false;
+    }
+    for (size_t index = 0; index < lane.centerline.size(); ++index) {
+      const Vec2& point = lane.centerline[index];
+      if (!IsFinite(point.x) || !IsFinite(point.y)) {
+        *error = "lane centerline points must be finite";
+        return false;
+      }
+      if (index > 0 && Distance(lane.centerline[index - 1], point) < 1e-6) {
+        *error = "lane centerline segments must have positive length";
+        return false;
+      }
+    }
+  }
+  for (const Lane& lane : request.map.lanes) {
+    for (const std::string& successor_id : lane.successor_ids) {
+      if (!lane_ids.contains(successor_id)) {
+        *error = "lane successor id does not exist";
+        return false;
+      }
+    }
+  }
+  std::unordered_set<std::string> parking_spot_ids;
+  for (const ParkingSpot& spot : request.map.parking_spots) {
+    if (spot.id.empty() || !parking_spot_ids.insert(spot.id).second ||
+        !IsValidPose(spot.entry_pose) || !IsValidPose(spot.target_pose)) {
+      *error = "parking spot ids must be unique and poses must be finite";
       return false;
     }
   }
@@ -94,9 +127,13 @@ bool PlanningFrameAdapter::Adapt(const PlanningRequest& request, const VehicleCo
     return false;
   }
   if (!IsFinite(config.horizon_s) || !IsFinite(config.time_step_s) ||
-      !IsFinite(config.path_step_m) || config.horizon_s < config.time_step_s ||
-      config.time_step_s <= 0.0 || config.path_step_m <= 0.0 ||
-      config.path_coupling_iterations <= 0) {
+      !IsFinite(config.path_step_m) || !IsFinite(config.max_lane_match_distance_m) ||
+      !IsFinite(config.max_lane_heading_difference_rad) ||
+      config.horizon_s < config.time_step_s || config.time_step_s <= 0.0 ||
+      config.path_step_m <= 0.0 || config.path_coupling_iterations <= 0 ||
+      config.max_lane_match_distance_m <= 0.0 ||
+      config.max_lane_heading_difference_rad <= 0.0 ||
+      config.max_lane_heading_difference_rad > kPi) {
     *error = "invalid planner configuration";
     return false;
   }

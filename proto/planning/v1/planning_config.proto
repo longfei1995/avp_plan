@@ -31,6 +31,9 @@ message PlannerConfig {
 
   int32 path_coupling_iterations = 5; // 路径耦合优化的最大迭代次数
                                       // 可用于路径平滑、碰撞约束或多模块交替优化
+
+  double max_lane_match_distance_m = 6; // 自车或车位入口与车道中心线的最大匹配距离
+  double max_lane_heading_difference_rad = 7; // 自车与车道切线的最大航向差
 }
 
 // 规划器运行时总配置

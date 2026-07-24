@@ -4,6 +4,7 @@
 #include <limits>
 
 #include "local/local_planner.h"
+#include "map/global_planner.h"
 #include "planning/planner.h"
 #include "speed/speed_planner.h"
 
@@ -12,6 +13,12 @@
 namespace {
 void Check(bool condition, const char* message) {
   if (!condition) { std::cerr << "FAILED: " << message << '\n'; std::exit(1); }
+}
+bool NearlyEqual(double first, double second, double tolerance = 1e-6) {
+  return std::abs(first - second) <= tolerance;
+}
+void CheckPosition(const avp::Vec2& actual, const avp::Vec2& expected, const char* message) {
+  Check(NearlyEqual(actual.x, expected.x) && NearlyEqual(actual.y, expected.y), message);
 }
 avp::PlanningRequest MakeRequest() {
   avp::PlanningRequest request;
@@ -22,6 +29,160 @@ avp::PlanningRequest MakeRequest() {
   request.map.parking_spots.push_back({"P1", {{10.0, 0.0}, 0.0}, {{11.0, 0.0}, 0.0}});
   request.target_parking_spot_id = "P1";
   return request;
+}
+
+avp::PlanningFrame MakeGlobalFrame(const avp::MapSnapshot* map, const avp::Pose2d& ego_pose,
+                                   const std::string& target_parking_spot_id) {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.ego.pose = ego_pose;
+  frame.map = map;
+  frame.target_parking_spot_id = target_parking_spot_id;
+  return frame;
+}
+
+void TestGlobalRouteUsesLaneProjections() {
+  avp::MapSnapshot map;
+  map.lanes.push_back({"main", {{0.0, 0.0}, {10.0, 0.0}, {20.0, 0.0}}, {}, false});
+  map.parking_spots.push_back({"P", {{15.0, 0.0}, 0.0}, {{15.0, 0.0}, 0.0}});
+  avp::GlobalPlanner planner;
+  avp::GlobalRoute route;
+  std::string error;
+  const avp::PlanningFrame frame = MakeGlobalFrame(&map, {{5.0, 0.0}, 0.0}, "P");
+  Check(planner.Plan(frame, &route, &error), "mid-lane route should be planned");
+  Check(route.lane_ids.size() == 1 && route.lane_ids.front() == "main",
+        "same-lane route should keep one lane id");
+  CheckPosition(route.reference_line.front(), {5.0, 0.0},
+                "reference line must begin at ego projection");
+  CheckPosition(route.reference_line.back(), {15.0, 0.0},
+                "reference line must end at parking entry");
+  for (const avp::Vec2& point : route.reference_line) {
+    Check(point.x <= 15.0 + 1e-6, "reference line must not pass a mid-lane entry");
+  }
+}
+
+void TestSameLaneEntryBehindEgoIsUnreachable() {
+  avp::MapSnapshot map;
+  map.lanes.push_back({"main", {{0.0, 0.0}, {20.0, 0.0}}, {}, false});
+  map.parking_spots.push_back({"P", {{5.0, 0.0}, 0.0}, {{5.0, 0.0}, 0.0}});
+  avp::GlobalPlanner planner;
+  avp::GlobalRoute route;
+  std::string error;
+  const avp::PlanningFrame frame = MakeGlobalFrame(&map, {{12.0, 0.0}, 0.0}, "P");
+  Check(!planner.Plan(frame, &route, &error), "entry behind ego must not reverse along a lane");
+}
+
+void TestLaneProjectionMatching() {
+  avp::MapSnapshot sparse_map;
+  sparse_map.lanes.push_back({"sparse", {{0.0, 0.0}, {100.0, 0.0}}, {}, false});
+  sparse_map.parking_spots.push_back({"P", {{80.0, 0.0}, 0.0}, {{80.0, 0.0}, 0.0}});
+  avp::GlobalPlanner planner;
+  avp::GlobalRoute route;
+  std::string error;
+  Check(planner.Plan(MakeGlobalFrame(&sparse_map, {{50.0, 0.0}, 0.0}, "P"), &route, &error),
+        "projection must match the middle of a sparse segment");
+  CheckPosition(route.reference_line.front(), {50.0, 0.0},
+                "sparse lane route must start at segment projection");
+
+  avp::MapSnapshot opposite_map;
+  opposite_map.lanes.push_back({"westbound", {{100.0, 0.0}, {0.0, 0.0}}, {}, false});
+  opposite_map.parking_spots.push_back(
+      {"P", {{20.0, 0.0}, avp::kPi}, {{20.0, 0.0}, avp::kPi}});
+  Check(!planner.Plan(MakeGlobalFrame(&opposite_map, {{50.0, 0.0}, 0.0}, "P"), &route, &error),
+        "opposite-direction lane must not match ego heading");
+
+  avp::MapSnapshot distant_map;
+  distant_map.lanes.push_back({"main", {{0.0, 0.0}, {20.0, 0.0}}, {}, false});
+  distant_map.parking_spots.push_back({"P", {{10.0, 0.0}, 0.0}, {{10.0, 0.0}, 0.0}});
+  Check(!planner.Plan(MakeGlobalFrame(&distant_map, {{0.0, 2.1}, 0.0}, "P"), &route, &error),
+        "ego farther than lane matching threshold must be rejected");
+}
+
+void TestMapValidation() {
+  avp::Planner planner;
+  avp::PlanningRequest duplicate_lane = MakeRequest();
+  duplicate_lane.map.lanes.push_back(duplicate_lane.map.lanes.front());
+  Check(planner.Plan(duplicate_lane).status == avp::PlanningStatus::kInvalidInput,
+        "duplicate lane ids must be rejected");
+
+  avp::PlanningRequest unknown_successor = MakeRequest();
+  unknown_successor.map.lanes.front().successor_ids = {"missing"};
+  Check(planner.Plan(unknown_successor).status == avp::PlanningStatus::kInvalidInput,
+        "unknown lane successor must be rejected");
+
+  avp::PlanningRequest invalid_centerline = MakeRequest();
+  invalid_centerline.map.lanes.front().centerline[1].x =
+      std::numeric_limits<double>::quiet_NaN();
+  Check(planner.Plan(invalid_centerline).status == avp::PlanningStatus::kInvalidInput,
+        "non-finite lane centerline point must be rejected");
+
+  avp::PlanningRequest duplicate_point = MakeRequest();
+  duplicate_point.map.lanes.front().centerline[1] = duplicate_point.map.lanes.front().centerline[0];
+  Check(planner.Plan(duplicate_point).status == avp::PlanningStatus::kInvalidInput,
+        "zero-length lane segment must be rejected");
+
+  avp::PlanningRequest duplicate_parking_spot = MakeRequest();
+  duplicate_parking_spot.map.parking_spots.push_back(duplicate_parking_spot.map.parking_spots.front());
+  Check(planner.Plan(duplicate_parking_spot).status == avp::PlanningStatus::kInvalidInput,
+        "duplicate parking spot ids must be rejected");
+
+  avp::PlanningRequest invalid_parking_pose = MakeRequest();
+  invalid_parking_pose.map.parking_spots.front().entry_pose.yaw =
+      std::numeric_limits<double>::infinity();
+  Check(planner.Plan(invalid_parking_pose).status == avp::PlanningStatus::kInvalidInput,
+        "non-finite parking pose must be rejected");
+
+  avp::PlannerConfig invalid_match_config;
+  invalid_match_config.max_lane_match_distance_m = 0.0;
+  avp::Planner invalid_match_planner({}, invalid_match_config);
+  Check(invalid_match_planner.Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "non-positive lane match distance must be rejected");
+
+  invalid_match_config.max_lane_match_distance_m = 2.0;
+  invalid_match_config.max_lane_heading_difference_rad = avp::kPi + 1e-3;
+  avp::Planner invalid_heading_planner({}, invalid_match_config);
+  Check(invalid_heading_planner.Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "lane heading threshold above pi must be rejected");
+}
+
+void TestPlannerTrajectoryStartsAtEgoPose() {
+  avp::PlanningRequest request = MakeRequest();
+  request.ego.pose = {{2.5, 0.0}, 0.0};
+  avp::Planner planner;
+  const avp::PlanningResponse response = planner.Plan(request);
+  Check(response.status == avp::PlanningStatus::kOk,
+        "planner should generate a trajectory from a mid-lane ego pose");
+  Check(!response.trajectory.empty(), "trajectory should contain the ego anchor point");
+  CheckPosition(response.trajectory.front().pose.position, request.ego.pose.position,
+                "timed trajectory must start at ego position");
+  Check(NearlyEqual(response.trajectory.front().pose.yaw, request.ego.pose.yaw),
+        "timed trajectory must start at ego yaw");
+}
+
+void TestLocalPlannerAnchorsEgoPose() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.ego.pose = {{0.0, 0.0}, 0.0};
+  frame.vehicle.length_m = 1.0;
+  frame.vehicle.width_m = 0.4;
+  frame.vehicle.max_curvature_1pm = 1.0;
+  frame.vehicle.safety_margin_m = 0.05;
+  frame.config.path_step_m = 0.5;
+  avp::GlobalRoute route;
+  route.reference_line = {{0.0, 0.0}, {10.0, 0.0}};
+  avp::LocalPlanner planner;
+  std::vector<avp::PathPoint> path;
+  std::string error;
+  Check(planner.Plan(frame, route, {}, &path, &error), "local planner should plan from ego pose");
+  CheckPosition(path.front().position, frame.ego.pose.position,
+                "local path first point must equal ego position");
+  Check(NearlyEqual(path.front().yaw, frame.ego.pose.yaw),
+        "local path first yaw must equal ego yaw");
+
+  frame.ego.pose.yaw = avp::kPi;
+  frame.vehicle.max_curvature_1pm = 0.1;
+  Check(!planner.Plan(frame, route, {}, &path, &error),
+        "infeasible ego anchor heading must reject the local path");
 }
 
 void TestOrientedRectangleCollision() {
@@ -108,6 +269,12 @@ void TestObstacleDimensionValidation() {
 
 int main() {
   TestOrientedRectangleCollision();
+  TestGlobalRouteUsesLaneProjections();
+  TestSameLaneEntryBehindEgoIsUnreachable();
+  TestLaneProjectionMatching();
+  TestMapValidation();
+  TestPlannerTrajectoryStartsAtEgoPose();
+  TestLocalPlannerAnchorsEgoPose();
   TestSlLattice();
   TestAccelerationConstrainedStDp();
   TestObstacleDimensionValidation();

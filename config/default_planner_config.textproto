@@ -14,4 +14,6 @@ planner {
   path_step_m: 0.5
   input_max_age_s: 0.5
   path_coupling_iterations: 2
+  max_lane_match_distance_m: 2.0
+  max_lane_heading_difference_rad: 1.0471975512
 }

@@ -70,11 +70,11 @@ Planner::Planner(VehicleConfig vehicle, PlannerConfig config)
     : vehicle_(vehicle), config_(config) {}
 
 PlanningResponse Planner::Plan(const PlanningRequest& request) const {
-  // 始终回传请求头，便于上层将成功或失败结果与原始请求关联。
+  // 回传请求头。
   PlanningResponse response;
   response.header = request.header;
 
-  // 在进入各规划算法前，统一校验外部输入并归一化为内部 PlanningFrame。
+  // 输入适配与校验。
   PlanningFrame frame;
   std::string error;
   if (!adapter_.Adapt(request, vehicle_, config_, &frame, &error)) {
@@ -83,8 +83,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     return response;
   }
 
-  // 全局规划先在车道图中找到通往车位入口的路线，并用 Hybrid A* 补齐到目标车位的连接。
-  // 这一步失败意味着没有可供局部规划器跟随的参考线。
+  // 全局路径规划。
   GlobalRoute route;
   if (!global_planner_.Plan(frame, &route, &error)) {
     response.status = PlanningStatus::kNoRoute;
@@ -92,9 +91,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     return response;
   }
 
-  // 路径与速度相互依赖：路径避障需要预计到达时刻，速度规划又以路径弧长为输入。
-  // 首轮没有到达时刻，局部规划器按 t=0 检查；之后将速度剖面回投为每个路径点的到达时刻，
-  // 供下一轮在对应的障碍物预测时刻重新规划路径。
+  // 路径-速度迭代耦合。
   std::vector<double> arrivals;
   std::vector<PathPoint> path;
   std::vector<SpeedPoint> speed;
@@ -103,8 +100,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
         !speed_planner_.Plan(frame, path, &speed, &error))
       break;
 
-    // 对每个路径弧长 s，取速度剖面中第一个到达或越过该位置的时刻。
-    // 若该轮速度剖面未覆盖路径末端，则保守地使用整个规划时域末尾。
+    // 回投路径点到达时刻。
     arrivals.assign(path.size(), frame.config.horizon_s);
     for (size_t i = 0; i < path.size(); ++i) {
       for (const SpeedPoint& point : speed) {
@@ -116,8 +112,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     }
   }
 
-  // 任一局部模块未产生可行结果时，不能输出半成品轨迹。生成沿当前车头方向的匀减速停车
-  // 轨迹作为降级，并显式记录它是否也通过碰撞检查，供上层决定后续安全动作。
+  // 局部规划失败时降级停车。
   if (path.empty() || speed.empty()) {
     response.trajectory = MakeStopTrajectory(frame);
     const bool stop_is_safe = IsCollisionFree(frame, response.trajectory);
@@ -129,8 +124,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     return response;
   }
 
-  // 速度剖面只描述“何时到达哪个弧长”；在这里从空间路径插值得到位姿和曲率，形成
-  // 控制器可直接消费的时序轨迹。
+  // 合成时序轨迹。
   response.trajectory.reserve(speed.size());
   for (const SpeedPoint& point : speed) {
     response.trajectory.push_back({{PositionAtS(path, point.s), YawAtS(path, point.s)},
@@ -140,8 +134,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
                                    point.time_s});
   }
 
-  // 局部路径和速度规划各自做过离散碰撞检查，但合成后仍需以最终轨迹逐点校验，作为
-  // 输出前的统一安全闸门。失败时同样退化为停车轨迹，而不返回有碰撞风险的规划结果。
+  // 最终碰撞校验。
   if (!IsCollisionFree(frame, response.trajectory)) {
     response.trajectory = MakeStopTrajectory(frame);
     response.status = PlanningStatus::kNoSafeTrajectory;
@@ -153,7 +146,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     return response;
   }
 
-  // 只有完整时序轨迹通过最终校验，才报告规划成功及所用算法链路。
+  // 返回规划结果。
   response.status = PlanningStatus::kOk;
   response.message = "spatiotemporal DP trajectory generated";
   response.diagnostics.push_back("global=A_STAR");

@@ -99,11 +99,18 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
     return false;
   }
 
-  const std::vector<ReferencePoint> reference =
+  std::vector<ReferencePoint> reference =
       ResampleReferenceLine(route.reference_line, frame.config.path_step_m);
   if (reference.size() < 2) {
     *error = "reference line has no usable length";
     return false;
+  }
+  if (Distance(reference.front().position, frame.ego.pose.position) < 1e-6) {
+    reference.front().position = frame.ego.pose.position;
+    reference.front().yaw = frame.ego.pose.yaw;
+    reference.front().s = 0.0;
+  } else {
+    reference.insert(reference.begin(), {frame.ego.pose.position, frame.ego.pose.yaw, 0.0});
   }
 
   constexpr int kLateralCount = 13;
@@ -124,17 +131,18 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
       positions[layer][lateral] = OffsetPosition(reference[layer], lateral_offsets[lateral]);
     }
   }
+  for (int lateral = 0; lateral < kLateralCount; ++lateral) {
+    positions[0][lateral] = frame.ego.pose.position;
+  }
 
   const double infinity = std::numeric_limits<double>::infinity();
   std::vector<double> initial_cost(kLateralCount, infinity);
-  for (int lateral = 0; lateral < kLateralCount; ++lateral) {
-    const Pose2d pose{positions[0][lateral], reference[0].yaw};
-    if (IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, 0))) {
-      initial_cost[lateral] = kLateralWeight * lateral_offsets[lateral] * lateral_offsets[lateral];
-    }
+  const int anchor_lateral = kLateralCount / 2;
+  if (IsCollisionFree(frame, frame.ego.pose, ArrivalTimeAt(arrival_times, 0))) {
+    initial_cost[anchor_lateral] = 0.0;
   }
 
-  const double first_distance = Distance(positions[0][0], positions[1][0]);
+  const double first_distance = Distance(reference[0].position, reference[1].position);
   if (first_distance < 1e-6) {
     *error = "reference line contains duplicate samples";
     return false;
@@ -148,6 +156,11 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
       const Vec2 delta{positions[1][second].x - positions[0][first].x,
                        positions[1][second].y - positions[0][first].y};
       const Pose2d pose{positions[1][second], std::atan2(delta.y, delta.x)};
+      const double initial_connection_length = Distance(positions[0][first], positions[1][second]);
+      if (std::abs(NormalizeAngle(pose.yaw - frame.ego.pose.yaw)) >
+          frame.vehicle.max_curvature_1pm * initial_connection_length + 1e-9) {
+        continue;
+      }
       if (!IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, 1))) {
         continue;
       }
@@ -245,9 +258,20 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
     const Vec2& after = index + 1 < reference.size()
                             ? positions[index + 1][lateral_indices[index + 1]]
                             : position;
-    const double yaw = index + 1 < reference.size() ? std::atan2(after.y - before.y, after.x - before.x)
-                                                      : path->back().yaw;
+    const double yaw = index == 0
+                           ? frame.ego.pose.yaw
+                           : (index + 1 < reference.size()
+                                  ? std::atan2(after.y - before.y, after.x - before.x)
+                                  : path->back().yaw);
     path->push_back({position, yaw, 0.0, s});
+  }
+  if (path->size() > 1) {
+    const double first_segment = Distance(path->at(0).position, path->at(1).position);
+    const double first_segment_yaw =
+        std::atan2(path->at(1).position.y - path->at(0).position.y,
+                   path->at(1).position.x - path->at(0).position.x);
+    path->at(0).curvature =
+        std::abs(NormalizeAngle(first_segment_yaw - path->at(0).yaw)) / first_segment;
   }
   for (size_t index = 1; index + 1 < path->size(); ++index) {
     path->at(index).curvature = Curvature(path->at(index - 1).position, path->at(index).position,

@@ -30,10 +30,25 @@ inline Vec2 Interpolate(const Vec2& first, const Vec2& second, double ratio) {
   return {first.x + (second.x - first.x) * ratio, first.y + (second.y - first.y) * ratio};
 }
 
-struct Pose2d { Vec2 position; double yaw = 0.0; };
-struct Header { std::string frame_id; uint64_t timestamp_ns = 0; uint64_t sequence_id = 0; };
-struct EgoState { Pose2d pose; double speed_mps = 0.0; double acceleration_mps2 = 0.0; };
-struct PredictionPoint { uint64_t timestamp_ns = 0; Pose2d pose; double speed_mps = 0.0; };
+struct Pose2d {
+  Vec2 position;
+  double yaw = 0.0;
+};
+struct Header {
+  std::string frame_id;
+  uint64_t timestamp_ns = 0;
+  uint64_t sequence_id = 0;
+};
+struct EgoState {
+  Pose2d pose;
+  double speed_mps = 0.0;
+  double acceleration_mps2 = 0.0;
+};
+struct PredictionPoint {
+  uint64_t timestamp_ns = 0;
+  Pose2d pose;
+  double speed_mps = 0.0;
+};
 struct Obstacle {
   std::string id;
   double length_m = 0.0;
@@ -41,9 +56,21 @@ struct Obstacle {
   double confidence = 1.0;
   std::vector<PredictionPoint> prediction;
 };
-struct Lane { std::string id; std::vector<Vec2> centerline; std::vector<std::string> successor_ids; bool closed = false; };
-struct ParkingSpot { std::string id; Pose2d entry_pose; Pose2d target_pose; };
-struct MapSnapshot { std::vector<Lane> lanes; std::vector<ParkingSpot> parking_spots; };
+struct Lane {
+  std::string id;   // 车道 ID
+  std::vector<Vec2> centerline; // 车道中心线点
+  std::vector<std::string> successor_ids; // 后续车道 ID
+  bool closed = false;  // 车道是否关闭
+};
+struct ParkingSpot {
+  std::string id;
+  Pose2d entry_pose;
+  Pose2d target_pose;
+};
+struct MapSnapshot {
+  std::vector<Lane> lanes;
+  std::vector<ParkingSpot> parking_spots;
+};
 
 struct VehicleConfig {
   double length_m = 4.8;
@@ -60,13 +87,9 @@ inline double Dot(const Vec2& first, const Vec2& second) {
   return first.x * second.x + first.y * second.y;
 }
 
-inline Vec2 HeadingAxis(double yaw) {
-  return {std::cos(yaw), std::sin(yaw)};
-}
+inline Vec2 HeadingAxis(double yaw) { return {std::cos(yaw), std::sin(yaw)}; }
 
-inline Vec2 LateralAxis(double yaw) {
-  return {-std::sin(yaw), std::cos(yaw)};
-}
+inline Vec2 LateralAxis(double yaw) { return {-std::sin(yaw), std::cos(yaw)}; }
 
 // 使用分离轴定理检测两个有向矩形。自车半尺寸按安全边距膨胀，边界接触视为碰撞。
 inline bool IsVehicleObstacleCollision(const Pose2d& vehicle_pose, const VehicleConfig& vehicle,
@@ -84,9 +107,8 @@ inline bool IsVehicleObstacleCollision(const Pose2d& vehicle_pose, const Vehicle
                           obstacle_pose.position.y - vehicle_pose.position.y};
 
   for (const Vec2& axis : {vehicle_axes[0], vehicle_axes[1], obstacle_axes[0], obstacle_axes[1]}) {
-    const double vehicle_projection =
-        vehicle_half_length * std::abs(Dot(vehicle_axes[0], axis)) +
-        vehicle_half_width * std::abs(Dot(vehicle_axes[1], axis));
+    const double vehicle_projection = vehicle_half_length * std::abs(Dot(vehicle_axes[0], axis)) +
+                                      vehicle_half_width * std::abs(Dot(vehicle_axes[1], axis));
     const double obstacle_projection =
         obstacle_half_length * std::abs(Dot(obstacle_axes[0], axis)) +
         obstacle_half_width * std::abs(Dot(obstacle_axes[1], axis));
@@ -103,6 +125,8 @@ struct PlannerConfig {
   double path_step_m = 0.5;
   double input_max_age_s = 0.5;
   int path_coupling_iterations = 2;
+  double max_lane_match_distance_m = 2.0;
+  double max_lane_heading_difference_rad = kPi / 3.0;
 };
 struct PlanningRequest {
   Header header;
@@ -120,8 +144,19 @@ struct PlanningFrame {
   VehicleConfig vehicle;
   PlannerConfig config;
 };
-struct PathPoint { Vec2 position; double yaw = 0.0; double curvature = 0.0; double s = 0.0; };
-struct TimedTrajectoryPoint { Pose2d pose; double curvature_1pm = 0.0; double speed_mps = 0.0; double acceleration_mps2 = 0.0; double relative_time_s = 0.0; };
+struct PathPoint {
+  Vec2 position;
+  double yaw = 0.0;
+  double curvature = 0.0;
+  double s = 0.0;
+};
+struct TimedTrajectoryPoint {
+  Pose2d pose;
+  double curvature_1pm = 0.0;
+  double speed_mps = 0.0;
+  double acceleration_mps2 = 0.0;
+  double relative_time_s = 0.0;
+};
 
 enum class PlanningStatus { kOk, kInvalidInput, kNoRoute, kNoSafeTrajectory, kInternalError };
 struct PlanningResponse {
@@ -134,13 +169,18 @@ struct PlanningResponse {
 
 inline const char* ToString(PlanningStatus status) {
   switch (status) {
-    case PlanningStatus::kOk: return "OK";
-    case PlanningStatus::kInvalidInput: return "INVALID_INPUT";
-    case PlanningStatus::kNoRoute: return "NO_ROUTE";
-    case PlanningStatus::kNoSafeTrajectory: return "NO_SAFE_TRAJECTORY";
-    case PlanningStatus::kInternalError: return "INTERNAL_ERROR";
+    case PlanningStatus::kOk:
+      return "OK";
+    case PlanningStatus::kInvalidInput:
+      return "INVALID_INPUT";
+    case PlanningStatus::kNoRoute:
+      return "NO_ROUTE";
+    case PlanningStatus::kNoSafeTrajectory:
+      return "NO_SAFE_TRAJECTORY";
+    case PlanningStatus::kInternalError:
+      return "INTERNAL_ERROR";
   }
   return "INTERNAL_ERROR";
 }
-}  // avp 命名空间
+}  // namespace avp
 #endif  // 头文件保护
