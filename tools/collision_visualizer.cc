@@ -1,5 +1,9 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,6 +13,11 @@
 #include "collision_test_cases.h"
 
 namespace {
+
+constexpr size_t kSubplotRows = 2;
+constexpr size_t kSubplotColumns = 2;
+constexpr size_t kCasesPerFigure = kSubplotRows * kSubplotColumns;
+constexpr char kDefaultOutputDirectory[] = "build/visualize/collision_visualizations";
 
 std::array<avp::Vec2, 5> RectangleCorners(const avp::Pose2d& pose, double length_m,
                                           double width_m) {
@@ -55,7 +64,9 @@ void DrawHeading(const matplot::axes_handle& axis, const avp::Pose2d& pose, doub
 
 void DrawCase(const matplot::figure_handle& figure, size_t index,
               const avp::test::CollisionTestCase& test_case) {
-  const matplot::axes_handle axis = matplot::subplot(figure, 2, 3, index + 1);
+  const matplot::axes_handle axis =
+      matplot::subplot(figure, kSubplotRows, kSubplotColumns, index);
+  axis->hold(true);
   const bool collision = avp::IsVehicleObstacleCollision(
       test_case.vehicle_pose, test_case.vehicle, test_case.obstacle_pose,
       test_case.obstacle_length_m, test_case.obstacle_width_m);
@@ -75,24 +86,57 @@ void DrawCase(const matplot::figure_handle& figure, size_t index,
   DrawHeading(axis, test_case.vehicle_pose, test_case.vehicle.length_m, "b");
   DrawHeading(axis, test_case.obstacle_pose, test_case.obstacle_length_m, obstacle_color);
 
+  matplot::axis(axis, matplot::equal);
   axis->xlim({-3.0, 7.0});
   axis->ylim({-5.0, 5.0});
-  matplot::axis(axis, matplot::equal);
   axis->grid(true);
   axis->xlabel("x (m)");
   axis->ylabel("y (m)");
-  axis->title(std::string(test_case.name) + " | expected=" +
-              (test_case.expected_collision ? "collision" : "separated") + " | actual=" +
+  axis->title(std::string("Expected: ") +
+              (test_case.expected_collision ? "collision" : "separated") + " | Actual: " +
               (collision ? "collision" : "separated"));
 }
 
 }  // namespace
 
-int main() {
-  const matplot::figure_handle figure = matplot::figure(true);
-  figure->size(1400, 850);
-  for (size_t index = 0; index < avp::test::CollisionTestCases().size(); ++index) {
-    DrawCase(figure, index, avp::test::CollisionTestCases()[index]);
+int main(int argc, char* argv[]) {
+  if (argc > 2) {
+    std::cerr << "Usage: collision_visualizer [output_directory]\n";
+    return 1;
   }
-  figure->show();
+
+  const std::filesystem::path output_directory =
+      argc == 2 ? std::filesystem::path(argv[1]) : std::filesystem::path(kDefaultOutputDirectory);
+  std::error_code error;
+  std::filesystem::create_directories(output_directory, error);
+  if (error) {
+    std::cerr << "Failed to create output directory '" << output_directory << "': "
+              << error.message() << '\n';
+    return 1;
+  }
+
+  const auto& test_cases = avp::test::CollisionTestCases();
+
+  for (size_t first_case = 0; first_case < test_cases.size(); first_case += kCasesPerFigure) {
+    const matplot::figure_handle figure = matplot::figure(true);
+    figure->size(1100, 850);
+    figure->title("OBB/SAT collision cases " + std::to_string(first_case + 1) + "-" +
+                  std::to_string(std::min(first_case + kCasesPerFigure, test_cases.size())));
+    for (size_t index = 0; index < kCasesPerFigure && first_case + index < test_cases.size();
+         ++index) {
+      DrawCase(figure, index, test_cases[first_case + index]);
+    }
+
+    const std::filesystem::path output_path =
+        output_directory / ("collision_cases_" + std::to_string(first_case + 1) + "_to_" +
+                            std::to_string(std::min(first_case + kCasesPerFigure, test_cases.size())) +
+                            ".png");
+    if (!figure->save(output_path.string(), "png")) {
+      std::cerr << "Failed to save '" << output_path << "'.\n";
+      return 1;
+    }
+    std::cout << "Saved " << output_path << '\n';
+  }
+
+  return 0;
 }

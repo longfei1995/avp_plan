@@ -20,10 +20,10 @@ ctest --test-dir build --output-on-failure
 
 ### 碰撞几何可视化
 
-`collision_visualizer` 是一个手动运行的调试工具：它将 OBB/SAT 的六个单元测试场景绘制为
-2×3 交互式窗口。蓝色实线表示自车真实矩形，蓝色虚线表示安全边距膨胀后的碰撞包络；
-障碍物为红色时表示碰撞、绿色时表示分离。该工具不属于 CTest，也不会在默认构建中引入
-图形依赖。
+`collision_visualizer` 是一个手动运行的调试工具：它将 OBB/SAT 的六个单元测试场景按
+每窗口 2×2 子图分页显示。蓝色实线表示自车真实矩形，蓝色虚线表示安全边距膨胀后的
+碰撞包络；障碍物为红色时表示碰撞、绿色时表示分离。该工具不属于 CTest，也不会在默认
+构建中引入图形依赖。
 
 启用该工具前，需要将 Matplot++ 以 CMake package 形式安装（使
 `find_package(Matplot++ CONFIG REQUIRED)` 可用），并安装带桌面终端的 Gnuplot。例如 Debian/Ubuntu：
