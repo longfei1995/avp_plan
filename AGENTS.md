@@ -9,8 +9,9 @@
 
 `proto/planning/v1/` 定义集成和配置协议，
 `config/default_planner_config.textproto` 提供默认运行参数。将聚焦的
-可执行测试放在 `tests/`（当前为 `tests/planning_test.cc`）。构建产物
-应位于 `build/`，不得提交。
+可执行测试放在 `tests/`（`planning_test.cc` 及其共享的
+`collision_test_cases.h`）。`tools/` 存放不纳入 CTest 的手动调试工具，当前为
+基于 Matplot++ 的 `collision_visualizer`。构建产物应位于 `build/`，不得提交。
 
 ## 规划与安全模型
 
@@ -24,8 +25,14 @@
 曲率边界测试。`speed` 使用带前一段速度历史的 S-T 状态；速度、最大加速度和最大
 减速度均为硬约束，禁止在输出阶段通过截断加速度来掩盖不可行转移。
 
-障碍物预测采用零阶保持，所有局部、速度、开放空间和最终校验必须使用同一 SAT 矩形
-碰撞模型。`HybridAStar` 目前使用障碍物第一帧预测，修改其时域行为时应同步更新 README。
+障碍物预测采用“取不晚于查询时刻的最后一帧”的零阶保持；查询早于第一帧时使用第一帧。
+`local`、`speed` 和顶层最终校验必须使用同一 SAT 矩形碰撞模型。
+`HybridAStar` 刻意只使用障碍物第一帧预测；修改其时域行为时应同步更新 README 和测试。
+
+顶层 `Planner::Plan()` 先适配输入，再执行全局路线、路径—速度交替耦合和轨迹合成。
+耦合首轮以 `t=0` 规划路径，后续轮次将速度剖面回投为路径点到达时刻。局部规划或最终
+校验失败时，返回沿当前航向匀减速的停车降级轨迹和 `kNoSafeTrajectory`；
+`stop_collision_free` 诊断仅说明该离散停车轨迹的检查结果，并不保证降级一定安全。
 
 ## 构建、测试与开发命令
 
@@ -40,7 +47,12 @@ ctest --test-dir build --output-on-failure # 执行测试套件
 如需可复现的 Debug 构建，依次运行 `cmake --preset debug`、
 `cmake --build --preset debug` 和 `ctest --preset debug`。涉及算法或内存
 安全的修改还应运行 `cmake --preset sanitize` 与
-`cmake --build --preset sanitize`。
+`cmake --build --preset sanitize`，然后使用
+`ctest --test-dir build/sanitize --output-on-failure`（当前没有 `sanitize` CTest 预设）。
+
+碰撞几何可视化是可选依赖：安装 Matplot++ 和 Gnuplot 后，使用
+`cmake --preset visualize`、`cmake --build --preset visualize --target collision_visualizer`
+构建，再运行 `./build/visualize/tools/collision_visualizer`。不要让该依赖进入默认构建或测试。
 
 ## Protobuf / protoc 安装
 
@@ -80,8 +92,8 @@ S-T 相邻速度差满足严格加减速度限制。测试应自包含；当前�
 
 ## 提交与拉取请求指南
 
-此检出环境无法读取 Git 历史，因此请采用简洁的祈使式提交标题，例如
-`Add blocked-route fallback test`。每个提交只聚焦一个变更。拉取请求应说明
+请采用简洁的祈使式提交标题，例如 `Add blocked-route fallback test`。每个提交只聚焦一个
+变更。拉取请求应说明
 受影响的规划行为、列出已运行的验证命令、关联相关议题；若外部可见行为
 变更，还应附上示例轨迹或诊断输出。修改协议字段或默认安全参数前，必须
 说明兼容性与验证影响。
