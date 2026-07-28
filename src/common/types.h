@@ -16,7 +16,7 @@ struct Vec2 {
   double x = 0.0;
   double y = 0.0;
 };
-
+// 计算两点间的欧几里得距离。
 inline double Distance(const Vec2& first, const Vec2& second) {
   return std::hypot(first.x - second.x, first.y - second.y);
 }
@@ -125,8 +125,8 @@ struct PlannerConfig {
   double path_step_m = 0.5;
   double input_max_age_s = 0.5;
   int path_coupling_iterations = 2;
-  double max_lane_match_distance_m = 2.0;
-  double max_lane_heading_difference_rad = kPi / 3.0;
+  double max_lane_match_distance_m = 2.0;               // 点离车道中心线多远仍可认为属于该车道，默认 2 m
+  double max_lane_heading_difference_rad = kPi / 3.0;   // 自车朝向和车道方向允许的最大差异，默认 π/3
 };
 struct PlanningRequest {
   Header header;

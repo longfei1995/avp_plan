@@ -8,8 +8,16 @@
 
 namespace avp {
 namespace {
-struct Node { Pose2d pose; int parent = -1; double g = 0.0; };
-struct Entry { double f; int index; bool operator>(const Entry& other) const { return f > other.f; } };
+struct Node {
+  Pose2d pose;
+  int parent = -1;
+  double g = 0.0;
+};
+struct Entry {
+  double f;
+  int index;
+  bool operator>(const Entry& other) const { return f > other.f; }
+};
 std::string Key(const Pose2d& pose) {
   std::ostringstream stream;
   stream << std::llround(pose.position.x * 2.0) << ':' << std::llround(pose.position.y * 2.0) << ':'
@@ -17,7 +25,8 @@ std::string Key(const Pose2d& pose) {
   return stream.str();
 }
 double Heuristic(const Pose2d& pose, const Pose2d& goal) {
-  return Distance(pose.position, goal.position) + 0.5 * std::abs(NormalizeAngle(goal.yaw - pose.yaw));
+  return Distance(pose.position, goal.position) +
+         0.5 * std::abs(NormalizeAngle(goal.yaw - pose.yaw));
 }
 bool Collides(const PlanningFrame& frame, const Pose2d& pose) {
   for (const Obstacle& obstacle : frame.obstacles) {
@@ -29,7 +38,7 @@ bool Collides(const PlanningFrame& frame, const Pose2d& pose) {
   }
   return false;
 }
-}  // 匿名命名空间
+}  // namespace
 
 bool HybridAStar::Plan(const PlanningFrame& frame, const Pose2d& start, const Pose2d& goal,
                        std::vector<Pose2d>* connection, std::string* error) const {
@@ -59,8 +68,8 @@ bool HybridAStar::Plan(const PlanningFrame& frame, const Pose2d& start, const Po
         next.position.x += direction * kStepM * std::cos(next.yaw);
         next.position.y += direction * kStepM * std::sin(next.yaw);
         if (Collides(frame, next)) continue;
-        const double g = current.g + kStepM + (direction < 0.0 ? 0.2 : 0.0) +
-                         std::abs(curvature) * 0.05;
+        const double g =
+            current.g + kStepM + (direction < 0.0 ? 0.2 : 0.0) + std::abs(curvature) * 0.05;
         const std::string key = Key(next);
         if (best_cost.contains(key) && best_cost[key] <= g) continue;
         best_cost[key] = g;
@@ -74,9 +83,10 @@ bool HybridAStar::Plan(const PlanningFrame& frame, const Pose2d& start, const Po
     return false;
   }
   connection->clear();
-  for (int index = goal_index; index >= 0; index = nodes[index].parent) connection->push_back(nodes[index].pose);
+  for (int index = goal_index; index >= 0; index = nodes[index].parent)
+    connection->push_back(nodes[index].pose);
   std::reverse(connection->begin(), connection->end());
   connection->push_back(goal);
   return true;
 }
-}  // avp 命名空间
+}  // namespace avp
