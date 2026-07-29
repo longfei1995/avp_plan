@@ -5,13 +5,13 @@
 
 namespace avp {
 namespace {
-
+// 局部规划器内部使用的参考线点
 struct ReferencePoint {
-  Vec2 position;
-  double yaw = 0.0;
-  double s = 0.0;
+  Vec2 position;        // 二维坐标
+  double yaw = 0.0;     // 该点参考线的切线方向
+  double s = 0.0;       // 从参考线起点累计的长度
 };
-
+// 根据连续三个点估计中间点 b 的曲率。
 double Curvature(const Vec2& a, const Vec2& b, const Vec2& c) {
   const double ab = Distance(a, b);
   const double bc = Distance(b, c);
@@ -23,7 +23,7 @@ double Curvature(const Vec2& a, const Vec2& b, const Vec2& c) {
                                 ((b.y - a.y) * (c.x - a.x)));
   return 2.0 * area2 / (ab * bc * ac);
 }
-
+// 按到达时刻取障碍物预测位置
 PredictionPoint PredictAt(const Obstacle& obstacle, uint64_t timestamp_ns) {
   PredictionPoint result = obstacle.prediction.front();
   for (const PredictionPoint& point : obstacle.prediction) {
@@ -34,7 +34,7 @@ PredictionPoint PredictAt(const Obstacle& obstacle, uint64_t timestamp_ns) {
   }
   return result;
 }
-
+// 重采样参考线，保证相邻点间距不大于 step_m。
 std::vector<ReferencePoint> ResampleReferenceLine(const std::vector<Vec2>& reference_line,
                                                   double step_m) {
   std::vector<Vec2> positions{reference_line.front()};
@@ -64,13 +64,14 @@ std::vector<ReferencePoint> ResampleReferenceLine(const std::vector<Vec2>& refer
   }
   return result;
 }
-
+// 从参考线向左/右偏移
 Vec2 OffsetPosition(const ReferencePoint& reference, double lateral_offset_m) {
   return {reference.position.x - std::sin(reference.yaw) * lateral_offset_m,
           reference.position.y + std::cos(reference.yaw) * lateral_offset_m};
 }
-
+// 时空碰撞检查
 bool IsCollisionFree(const PlanningFrame& frame, const Pose2d& pose, double arrival_time_s) {
+  // 把相对的到达时间戳 => 绝对时间戳(ns)
   const uint64_t timestamp = frame.header.timestamp_ns +
                              static_cast<uint64_t>(arrival_time_s * 1e9);
   for (const Obstacle& obstacle : frame.obstacles) {
@@ -82,15 +83,17 @@ bool IsCollisionFree(const PlanningFrame& frame, const Pose2d& pose, double arri
   return true;
 }
 
+// 防止数组越界
 double ArrivalTimeAt(const std::vector<double>& arrival_times, size_t index) {
   return arrival_times.empty() ? 0.0 : arrival_times[std::min(index, arrival_times.size() - 1)];
 }
 
+// 将一对横向索引映射到格点状态数组下标。
 size_t StateIndex(int previous_lateral_index, int current_lateral_index, int lateral_count) {
-  return static_cast<size_t>(previous_lateral_index * lateral_count + current_lateral_index);
+  return static_cast<size_t>(previous_lateral_index) * static_cast<size_t>(lateral_count) +
+         static_cast<size_t>(current_lateral_index);
 }
-
-}  // 匿名命名空间
+}; // namespace
 
 bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
                         const std::vector<double>& arrival_times, std::vector<PathPoint>* path,
@@ -98,7 +101,9 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   if (path == nullptr || error == nullptr || route.reference_line.size() < 2) {
     return false;
   }
-
+  // 1. 重采样参考线，并把自车作为路径起点
+  // todo 如果全局参考线首点离自车很远，这会产生一条很长的第一段连接线。
+  // 真实工程中通常会先把自车投影到全局参考线上，再截取附近一段参考线，而不是简单插入一个点。
   std::vector<ReferencePoint> reference =
       ResampleReferenceLine(route.reference_line, frame.config.path_step_m);
   if (reference.size() < 2) {
@@ -106,24 +111,29 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
     return false;
   }
   if (Distance(reference.front().position, frame.ego.pose.position) < 1e-6) {
+    // 严格替换为自车状态
     reference.front().position = frame.ego.pose.position;
     reference.front().yaw = frame.ego.pose.yaw;
     reference.front().s = 0.0;
   } else {
     reference.insert(reference.begin(), {frame.ego.pose.position, frame.ego.pose.yaw, 0.0});
   }
-
-  constexpr int kLateralCount = 13;
-  constexpr double kLateralStepM = 0.3;
-  constexpr double kLateralWeight = 1.0;
-  constexpr double kSlopeWeight = 4.0;
-  constexpr double kCurvatureWeight = 12.0;
+  // 2. 定义横向采样范围
+  constexpr int kLateralCount = 13;           // 每层横向采样 13 个候选点
+  constexpr double kLateralStepM = 0.3;       // 横向采样间距 0.3 m
+  // DP 的三个代价权重
+  constexpr double kLateralWeight = 1.0;      // 偏离参考线惩罚
+  constexpr double kSlopeWeight = 4.0;        // 横向变化过快的惩罚
+  constexpr double kCurvatureWeight = 12.0;   // 曲率过大惩罚
+  // lateral_offsets 保存 13 个横向偏移值，单位 m
   std::vector<double> lateral_offsets;
   lateral_offsets.reserve(kLateralCount);
   for (int index = 0; index < kLateralCount; ++index) {
-    lateral_offsets.push_back((index - kLateralCount / 2) * kLateralStepM);
+    const double centered_index = static_cast<double>(index) -
+                                  static_cast<double>(kLateralCount - 1) / 2.0;
+    lateral_offsets.push_back(centered_index * kLateralStepM);
   }
-
+  // 3. 构建 S-L 候选表格 positions
   std::vector<std::vector<Vec2>> positions(reference.size(),
                                            std::vector<Vec2>(kLateralCount));
   for (size_t layer = 0; layer < reference.size(); ++layer) {
@@ -134,25 +144,32 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   for (int lateral = 0; lateral < kLateralCount; ++lateral) {
     positions[0][lateral] = frame.ego.pose.position;
   }
-
+  // 4. 初始化 DP 
+  // 4.1 初始化第 0 层
   const double infinity = std::numeric_limits<double>::infinity();
   std::vector<double> initial_cost(kLateralCount, infinity);
-  const int anchor_lateral = kLateralCount / 2;
+  const int anchor_lateral = kLateralCount / 2;   // 横向偏移为 0 的中心索引
   if (IsCollisionFree(frame, frame.ego.pose, ArrivalTimeAt(arrival_times, 0))) {
+    // 如果自车在当前时刻没有和障碍物碰撞，则第 0 层中心点可达，总代价为 0。
     initial_cost[anchor_lateral] = 0.0;
   }
-
+  // 4.2 初始化第 1 层
   const double first_distance = Distance(reference[0].position, reference[1].position);
   if (first_distance < 1e-6) {
+    // 如果参考线前两点重合，朝向可能无意义，曲率可能无意义，无法计算 DP 代价。
     *error = "reference line contains duplicate samples";
     return false;
   }
-  std::vector<double> state_cost(kLateralCount * kLateralCount, infinity);
+  // 这里不再只保存一个横向索引，而是保存两个
+  const size_t lattice_state_count = static_cast<size_t>(kLateralCount) * kLateralCount;
+  std::vector<double> state_cost(lattice_state_count, infinity);
   for (int first = 0; first < kLateralCount; ++first) {
     if (!std::isfinite(initial_cost[first])) {
+      // 实际上只有 first == 6 能进入下一步
       continue;
     }
     for (int second = 0; second < kLateralCount; ++second) {
+      // delta 是从自车点到第 1 层候选点的位移向量
       const Vec2 delta{positions[1][second].x - positions[0][first].x,
                        positions[1][second].y - positions[0][first].y};
       const Pose2d pose{positions[1][second], std::atan2(delta.y, delta.x)};
@@ -172,9 +189,9 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   }
 
   std::vector<std::vector<int>> parents(reference.size(),
-                                         std::vector<int>(kLateralCount * kLateralCount, -1));
+                                         std::vector<int>(lattice_state_count, -1));
   for (size_t layer = 2; layer < reference.size(); ++layer) {
-    std::vector<double> next_cost(kLateralCount * kLateralCount, infinity);
+    std::vector<double> next_cost(lattice_state_count, infinity);
     const double distance = Distance(positions[layer - 1][0], positions[layer][0]);
     if (distance < 1e-6) {
       *error = "reference line contains duplicate samples";

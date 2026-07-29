@@ -35,9 +35,9 @@ struct Pose2d {
   double yaw = 0.0;
 };
 struct Header {
-  std::string frame_id;
-  uint64_t timestamp_ns = 0;
-  uint64_t sequence_id = 0;
+  std::string frame_id;         
+  uint64_t timestamp_ns = 0;    // 当前帧时间戳，单位纳秒
+  uint64_t sequence_id = 0;     
 };
 struct EgoState {
   Pose2d pose;
