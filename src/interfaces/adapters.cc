@@ -118,22 +118,24 @@ bool PlanningFrameAdapter::Adapt(const PlanningRequest& request, const VehicleCo
   }
   if (!IsFinite(vehicle.length_m) || !IsFinite(vehicle.width_m) ||
       !IsFinite(vehicle.max_speed_mps) || !IsFinite(vehicle.max_acceleration_mps2) ||
-      !IsFinite(vehicle.max_deceleration_mps2) || !IsFinite(vehicle.max_curvature_1pm) ||
+      !IsFinite(vehicle.max_deceleration_mps2) || !IsFinite(vehicle.min_jerk_mps3) ||
+      !IsFinite(vehicle.max_jerk_mps3) || !IsFinite(vehicle.max_curvature_1pm) ||
       !IsFinite(vehicle.safety_margin_m) || vehicle.length_m <= 0.0 || vehicle.width_m <= 0.0 ||
       vehicle.max_speed_mps <= 0.0 || vehicle.max_acceleration_mps2 <= 0.0 ||
-      vehicle.max_deceleration_mps2 <= 0.0 || vehicle.max_curvature_1pm <= 0.0 ||
+      vehicle.max_deceleration_mps2 <= 0.0 || vehicle.min_jerk_mps3 >= 0.0 ||
+      vehicle.max_jerk_mps3 <= 0.0 || vehicle.max_curvature_1pm <= 0.0 ||
       vehicle.safety_margin_m < 0.0) {
     *error = "invalid vehicle configuration";
     return false;
   }
   if (!IsFinite(config.horizon_s) || !IsFinite(config.time_step_s) ||
       !IsFinite(config.path_step_m) || !IsFinite(config.max_lane_match_distance_m) ||
-      !IsFinite(config.max_lane_heading_difference_rad) ||
+      !IsFinite(config.max_lane_heading_difference_rad) || !IsFinite(config.jerk_weight) ||
       config.horizon_s < config.time_step_s || config.time_step_s <= 0.0 ||
       config.path_step_m <= 0.0 || config.path_coupling_iterations <= 0 ||
       config.max_lane_match_distance_m <= 0.0 ||
       config.max_lane_heading_difference_rad <= 0.0 ||
-      config.max_lane_heading_difference_rad > kPi) {
+      config.max_lane_heading_difference_rad > kPi || config.jerk_weight < 0.0) {
     *error = "invalid planner configuration";
     return false;
   }

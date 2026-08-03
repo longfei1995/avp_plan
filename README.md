@@ -100,6 +100,8 @@ OK + trajectory + diagnostics
 
 如果局部路径或速度剖面任一失败，规划器调用 `MakeStopTrajectory()`，沿当前朝向以
 `max_deceleration_mps2` 匀减速生成停车轨迹，并在诊断中记录该停车轨迹是否无碰撞。
+该紧急停车轨迹以避碰为优先，不受正常速度规划的舒适 jerk 限制；诊断中会记录
+`jerk_constraint=emergency_exempt`。
 
 ## 算法原理与代码对应
 
@@ -153,16 +155,19 @@ OK + trajectory + diagnostics
 ### 4. 纵向速度规划：S-T 动态规划
 
 [`SpeedPlanner`](src/speed/speed_planner.cc) 建立 S-T 格点：横轴是路径离散点的弧长索引
-`s`，纵轴是 `0` 到 `horizon_s`、间隔为 `time_step_s` 的时刻 `t`。因为加速度取决于
-连续两段速度，状态保存相邻两个进度索引 `(s_{t-1}, s_t)`，而不只是当前 `s_t`。
+`s`，纵轴是 `0` 到 `horizon_s`、间隔为 `time_step_s` 的时刻 `t`。因为 jerk 取决于
+连续两次加速度，状态保存连续三个进度索引 `(s_{t-2}, s_{t-1}, s_t)`；可达状态使用
+有序稀疏容器保存，避免分配完整的三维格点并保持确定性回溯。
 
 - 初始状态是 `(t=0, s=0)`。
 - 转移只允许 `s_{t+1} >= s_t`，并计算 `v_t = (s_t-s_{t-1})/Δt`、
-  `a_t = (v_t-v_{t-1})/Δt`。速度、最大加速度和最大减速度全部是**严格可行性约束**：
-  超限状态不会进入格点图，输出阶段不再截断加速度。
+  `a_t = (v_t-v_{t-1})/Δt` 和 `j_t = (a_t-a_{t-1})/Δt`。首步 jerk 使用自车当前
+  加速度作为 `a_0`。速度、加减速度和正负 jerk 上下界全部是**严格可行性约束**：
+  超限状态不会进入格点图，输出阶段不再截断纵向状态。
 - 每个候选 `(t, s)` 使用该时刻障碍物预测和矩形车体检查碰撞。
-- 迁移代价为速度跟踪、行驶距离和加速度平方项；终点选择时给予进度奖励。末层状态经由
-  `parent` 回溯，因此输出的相邻速度与输出加速度严格一致。
+- 迁移代价为速度跟踪、行驶距离、加速度平方项和可配置的 jerk 平方项；终点选择时给予
+  进度奖励。末层状态经由 `parent` 回溯，因此输出的速度、加速度和由两者导出的 jerk
+  与被检查的状态严格一致。
 
 ## 模块职责
 
@@ -175,7 +180,7 @@ OK + trajectory + diagnostics
 | `map` | `global_planner.*` | 车道有向图 A*，拼出到车位入口的参考线，并调用开放空间连接器。 |
 | `open_space` | `hybrid_a_star.*` | 在可前进、可倒车、受曲率约束的离散状态空间中连接入口与车位目标姿态。 |
 | `local` | `local_planner.*` | 在分层 S-L 格点图中规划无碰撞、曲率可行的横向路径，生成带弧长的 `PathPoint`。 |
-| `speed` | `speed_planner.*` | 在带速度历史的 S-T 格点图中规划满足严格加减速度限制的进度与速度。 |
+| `speed` | `speed_planner.*` | 在带加速度历史的 S-T 格点图中规划满足严格加减速度和 jerk 限制的进度与速度。 |
 | `planning` | `planner.*` | 编排全部模块，执行两轮路径—速度耦合、轨迹合成、最终校验和紧急停车降级。 |
 | `proto` | `proto/planning/v1/*.proto` | 集成边界的 Protobuf 契约；本仓库不提交生成的绑定代码。 |
 | `config` | `default_planner_config.textproto` | 示例默认参数，字段与 `VehicleConfig`、`PlannerConfig` 对应。 |
@@ -199,7 +204,8 @@ avp::PlanningResponse response = planner.Plan(request);
 - 每个障碍物有非空 ID、有限的正长宽、`[0, 1]` 内置信度和非空预测序列；每个预测时刻
   不早于本次请求时间，位姿必须有效。障碍物长宽在该预测序列内固定，预测位姿的航向表示
   其有向矩形朝向。
-- 车辆的长、宽、速度/曲率/加减速度限制和安全边距必须有效；`horizon_s >= time_step_s`，
+- 车辆的长、宽、速度/曲率/加减速度/jerk 限制和安全边距必须有效；jerk 代价权重必须为
+  有限非负数；`horizon_s >= time_step_s`，
   `time_step_s`、`path_step_m`、`path_coupling_iterations`、车道匹配距离和航向阈值必须为正，
   且航向阈值不超过 π。
 
@@ -226,6 +232,8 @@ avp::PlanningResponse response = planner.Plan(request);
 - `path_step_m` 用于局部 S-L 参考线重采样；`input_max_age_s` 目前仍未使用，输入时效性
   应由集成上游保证。`max_lane_match_distance_m` 与
   `max_lane_heading_difference_rad` 默认分别为 `2.0 m` 与 `60°`，用于约束自车挂接道路车道。
+- 纵向 jerk 默认边界为 `[-4.0, 2.0] m/s³`，平方代价权重默认为 `1.0`。这些只是初始工程
+  参数，实车集成应根据驱动/制动响应、控制周期和舒适性数据重新标定。
 - 局部路径的第一个点固定为自车当前位姿；若无法以曲率约束连接到参考线，规划会走现有的
   安全停车降级，而不会输出位置断裂的轨迹。
 - 预测查询采用“取不晚于目标时刻的最后一个离散预测点”的零阶保持，不做插值；早于

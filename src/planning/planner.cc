@@ -119,6 +119,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     response.status = PlanningStatus::kNoSafeTrajectory;
     response.message = error.empty() ? "no feasible local path or speed profile" : error;
     response.diagnostics.push_back("fallback=emergency_stop");
+    response.diagnostics.push_back("jerk_constraint=emergency_exempt");
     response.diagnostics.push_back(stop_is_safe ? "stop_collision_free=true"
                                                 : "stop_collision_free=false");
     return response;
@@ -140,6 +141,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) const {
     response.status = PlanningStatus::kNoSafeTrajectory;
     response.message = "post-plan collision validation failed";
     response.diagnostics.push_back("fallback=emergency_stop");
+    response.diagnostics.push_back("jerk_constraint=emergency_exempt");
     response.diagnostics.push_back(IsCollisionFree(frame, response.trajectory)
                                        ? "stop_collision_free=true"
                                        : "stop_collision_free=false");

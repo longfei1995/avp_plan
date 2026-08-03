@@ -1,15 +1,19 @@
-#ifndef AVP_SPEED_SPEED_PLANNER_H_
-#define AVP_SPEED_SPEED_PLANNER_H_
+#pragma once
 
 #include <string>
 #include <vector>
+
 #include "common/types.h"
 namespace avp {
-struct SpeedPoint { double time_s = 0.0; double s = 0.0; double speed_mps = 0.0; double acceleration_mps2 = 0.0; };
+struct SpeedPoint {
+  double time_s = 0.0;                  // 相对当前规划时刻的时间
+  double s = 0.0;                       // 沿局部路径前进的累计距离
+  double speed_mps = 0.0;               // 当前时刻的速度
+  double acceleration_mps2 = 0.0;       // 当前时刻的加速度
+};
 class SpeedPlanner {
  public:
   bool Plan(const PlanningFrame& frame, const std::vector<PathPoint>& path,
             std::vector<SpeedPoint>* profile, std::string* error) const;
 };
-}  // avp 命名空间
-#endif  // 头文件保护
+}  // namespace avp

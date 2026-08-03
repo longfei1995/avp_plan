@@ -17,6 +17,24 @@ void Check(bool condition, const char* message) {
 bool NearlyEqual(double first, double second, double tolerance = 1e-6) {
   return std::abs(first - second) <= tolerance;
 }
+bool HasDiagnostic(const avp::PlanningResponse& response, const std::string& diagnostic) {
+  for (const std::string& item : response.diagnostics) {
+    if (item == diagnostic) {
+      return true;
+    }
+  }
+  return false;
+}
+double SumSquaredJerk(const std::vector<avp::SpeedPoint>& profile, double time_step_s) {
+  double result = 0.0;
+  for (size_t index = 1; index < profile.size(); ++index) {
+    const double jerk =
+        (profile[index].acceleration_mps2 - profile[index - 1].acceleration_mps2) /
+        time_step_s;
+    result += jerk * jerk;
+  }
+  return result;
+}
 void CheckPosition(const avp::Vec2& actual, const avp::Vec2& expected, const char* message) {
   Check(NearlyEqual(actual.x, expected.x) && NearlyEqual(actual.y, expected.y), message);
 }
@@ -225,18 +243,23 @@ void TestAccelerationConstrainedStDp() {
   frame.header = {"map", 1'000'000'000, 1};
   frame.config.horizon_s = 1.5;
   frame.config.time_step_s = 0.5;
+  frame.config.jerk_weight = 0.0;
   frame.vehicle.max_speed_mps = 2.0;
-  frame.vehicle.max_acceleration_mps2 = 0.5;
-  frame.vehicle.max_deceleration_mps2 = 0.5;
+  frame.vehicle.max_acceleration_mps2 = 1.0;
+  frame.vehicle.max_deceleration_mps2 = 1.0;
+  frame.vehicle.min_jerk_mps3 = -1.0;
+  frame.vehicle.max_jerk_mps3 = 1.0;
   const std::vector<avp::PathPoint> path{{{0.0, 0.0}, 0.0, 0.0, 0.0},
                                           {{0.125, 0.0}, 0.0, 0.0, 0.125},
                                           {{0.5, 0.0}, 0.0, 0.0, 0.5},
-                                          {{1.125, 0.0}, 0.0, 0.0, 1.125}};
+                                          {{1.0, 0.0}, 0.0, 0.0, 1.0}};
   avp::SpeedPlanner planner;
   std::vector<avp::SpeedPoint> profile;
   std::string error;
-  Check(planner.Plan(frame, path, &profile, &error), "acceleration-constrained S-T DP should plan");
+  Check(planner.Plan(frame, path, &profile, &error),
+        "acceleration- and jerk-constrained S-T DP should plan");
   Check(profile.size() == 4, "S-T profile should cover every time layer");
+  Check(profile.back().s > 0.0, "jerk-feasible S-T profile should make progress");
   for (size_t index = 1; index < profile.size(); ++index) {
     const double acceleration =
         (profile[index].speed_mps - profile[index - 1].speed_mps) / frame.config.time_step_s;
@@ -244,7 +267,135 @@ void TestAccelerationConstrainedStDp() {
           "S-T transition must respect maximum acceleration");
     Check(acceleration >= -frame.vehicle.max_deceleration_mps2 - 1e-9,
           "S-T transition must respect maximum deceleration");
+    const double jerk =
+        (profile[index].acceleration_mps2 - profile[index - 1].acceleration_mps2) /
+        frame.config.time_step_s;
+    Check(jerk <= frame.vehicle.max_jerk_mps3 + 1e-9,
+          "S-T transition must respect maximum positive jerk");
+    Check(jerk >= frame.vehicle.min_jerk_mps3 - 1e-9,
+          "S-T transition must respect maximum negative jerk");
   }
+  const double first_jerk =
+      (profile[1].acceleration_mps2 - profile[0].acceleration_mps2) /
+      frame.config.time_step_s;
+  const double last_jerk =
+      (profile[3].acceleration_mps2 - profile[2].acceleration_mps2) /
+      frame.config.time_step_s;
+  Check(NearlyEqual(first_jerk, frame.vehicle.max_jerk_mps3),
+        "test profile should exercise the positive jerk boundary");
+  Check(NearlyEqual(last_jerk, frame.vehicle.min_jerk_mps3),
+        "test profile should exercise the negative jerk boundary");
+}
+
+void TestJerkUsesInitialAccelerationAndShortHorizons() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.config.horizon_s = 0.5;
+  frame.config.time_step_s = 0.5;
+  frame.config.jerk_weight = 0.0;
+  frame.ego.speed_mps = 0.5;
+  frame.ego.acceleration_mps2 = 0.5;
+  frame.vehicle.max_speed_mps = 2.0;
+  frame.vehicle.max_acceleration_mps2 = 1.0;
+  frame.vehicle.max_deceleration_mps2 = 1.0;
+  frame.vehicle.min_jerk_mps3 = -0.1;
+  frame.vehicle.max_jerk_mps3 = 0.1;
+  const std::vector<avp::PathPoint> two_layer_path{
+      {{0.0, 0.0}, 0.0, 0.0, 0.0}, {{0.375, 0.0}, 0.0, 0.0, 0.375}};
+  avp::SpeedPlanner planner;
+  std::vector<avp::SpeedPoint> profile;
+  std::string error;
+  Check(planner.Plan(frame, two_layer_path, &profile, &error),
+        "two-layer S-T horizon should use the ego acceleration for the first jerk");
+  Check(profile.size() == 2 && NearlyEqual(profile.back().s, 0.375),
+        "two-layer S-T horizon should choose the only initial-jerk-feasible transition");
+  Check(NearlyEqual(profile[1].acceleration_mps2, frame.ego.acceleration_mps2),
+        "first planned acceleration should be continuous with ego acceleration");
+
+  frame.config.horizon_s = 1.0;
+  frame.ego.speed_mps = 0.0;
+  frame.ego.acceleration_mps2 = 0.0;
+  frame.vehicle.min_jerk_mps3 = -1.0;
+  frame.vehicle.max_jerk_mps3 = 1.0;
+  const std::vector<avp::PathPoint> three_layer_path{{{0.0, 0.0}, 0.0, 0.0, 0.0},
+                                                      {{0.125, 0.0}, 0.0, 0.0, 0.125},
+                                                      {{0.5, 0.0}, 0.0, 0.0, 0.5}};
+  Check(planner.Plan(frame, three_layer_path, &profile, &error),
+        "three-layer S-T horizon should initialize a complete jerk state");
+  Check(profile.size() == 3 && NearlyEqual(profile.back().s, 0.5),
+        "three-layer S-T horizon should backtrack its terminal state");
+}
+
+void TestJerkCostPrefersSmootherProfile() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.config.horizon_s = 1.5;
+  frame.config.time_step_s = 0.5;
+  frame.vehicle.max_speed_mps = 2.0;
+  frame.vehicle.max_acceleration_mps2 = 4.0;
+  frame.vehicle.max_deceleration_mps2 = 4.0;
+  frame.vehicle.min_jerk_mps3 = -20.0;
+  frame.vehicle.max_jerk_mps3 = 20.0;
+  const std::vector<avp::PathPoint> path{{{0.0, 0.0}, 0.0, 0.0, 0.0},
+                                          {{0.125, 0.0}, 0.0, 0.0, 0.125},
+                                          {{0.5, 0.0}, 0.0, 0.0, 0.5},
+                                          {{1.0, 0.0}, 0.0, 0.0, 1.0}};
+  avp::SpeedPlanner planner;
+  std::vector<avp::SpeedPoint> unweighted_profile;
+  std::vector<avp::SpeedPoint> weighted_profile;
+  std::string error;
+  frame.config.jerk_weight = 0.0;
+  Check(planner.Plan(frame, path, &unweighted_profile, &error),
+        "unweighted jerk profile should plan");
+  frame.config.jerk_weight = 1.0;
+  Check(planner.Plan(frame, path, &weighted_profile, &error),
+        "weighted jerk profile should plan");
+  Check(SumSquaredJerk(weighted_profile, frame.config.time_step_s) <
+            SumSquaredJerk(unweighted_profile, frame.config.time_step_s),
+        "jerk cost should select a strictly smoother profile on the crafted lattice");
+}
+
+void TestNoJerkFeasibleSpeedProfile() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.config.horizon_s = 0.5;
+  frame.config.time_step_s = 0.5;
+  frame.ego.acceleration_mps2 = 1.0;
+  frame.vehicle.max_acceleration_mps2 = 1.0;
+  frame.vehicle.min_jerk_mps3 = -0.5;
+  frame.vehicle.max_jerk_mps3 = 0.5;
+  const std::vector<avp::PathPoint> path{{{0.0, 0.0}, 0.0, 0.0, 0.0}};
+  avp::SpeedPlanner planner;
+  std::vector<avp::SpeedPoint> profile;
+  std::string error;
+  Check(!planner.Plan(frame, path, &profile, &error),
+        "S-T DP should reject a lattice with no jerk-feasible first transition");
+  Check(error == "all acceleration- and jerk-feasible S-T lattice states are blocked",
+        "jerk infeasibility should be reported explicitly");
+}
+
+void TestJerkConfigurationValidation() {
+  avp::VehicleConfig vehicle;
+  vehicle.min_jerk_mps3 = 0.0;
+  Check(avp::Planner(vehicle).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "non-negative minimum jerk must be rejected");
+  vehicle = {};
+  vehicle.max_jerk_mps3 = 0.0;
+  Check(avp::Planner(vehicle).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "non-positive maximum jerk must be rejected");
+  vehicle = {};
+  vehicle.min_jerk_mps3 = std::numeric_limits<double>::quiet_NaN();
+  Check(avp::Planner(vehicle).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "non-finite minimum jerk must be rejected");
+
+  avp::PlannerConfig config;
+  config.jerk_weight = -1.0;
+  Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "negative jerk weight must be rejected");
+  config = {};
+  config.jerk_weight = std::numeric_limits<double>::infinity();
+  Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "non-finite jerk weight must be rejected");
 }
 
 void TestObstacleDimensionValidation() {
@@ -277,6 +428,10 @@ int main() {
   TestLocalPlannerAnchorsEgoPose();
   TestSlLattice();
   TestAccelerationConstrainedStDp();
+  TestJerkUsesInitialAccelerationAndShortHorizons();
+  TestJerkCostPrefersSmootherProfile();
+  TestNoJerkFeasibleSpeedProfile();
+  TestJerkConfigurationValidation();
   TestObstacleDimensionValidation();
   avp::Planner planner;
   const avp::PlanningRequest request = MakeRequest();
@@ -295,7 +450,10 @@ int main() {
   avp::PlanningRequest blocked = request;
   blocked.obstacles.push_back(
       {"wall", 1.0, 6.0, 1.0, {{{1'000'000'000, {{5.0, 0.0}, 0.0}, 0.0}}}});
-  Check(planner.Plan(blocked).status == avp::PlanningStatus::kNoSafeTrajectory,
+  const avp::PlanningResponse blocked_response = planner.Plan(blocked);
+  Check(blocked_response.status == avp::PlanningStatus::kNoSafeTrajectory,
         "blocked route should fall back");
+  Check(HasDiagnostic(blocked_response, "jerk_constraint=emergency_exempt"),
+        "emergency fallback should diagnose its jerk-constraint exemption");
   std::cout << "avp_planning_test passed\n";
 }
