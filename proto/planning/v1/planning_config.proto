@@ -37,6 +37,9 @@ message PlannerConfig {
   double max_lane_match_distance_m = 6; // 自车或车位入口与车道中心线的最大匹配距离
   double max_lane_heading_difference_rad = 7; // 自车与车道切线的最大航向差
   double jerk_weight = 8; // 纵向 jerk 平方项的代价权重
+  double max_reverse_speed_mps = 9;
+  double gear_shift_stop_speed_mps = 10;
+  double gear_shift_dwell_s = 11;
 }
 
 // 规划器运行时总配置

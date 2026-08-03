@@ -57,7 +57,7 @@ cmake --build --preset visualize --target collision_visualizer
 3. [`src/planning/planner.cc`](src/planning/planner.cc)：顶层编排、失败分支和最终安全检查。
 4. [`src/interfaces/adapters.cc`](src/interfaces/adapters.cc)：什么输入会被接受或拒绝。
 5. [`src/map/global_planner.cc`](src/map/global_planner.cc) 与
-   [`src/open_space/hybrid_a_star.cc`](src/open_space/hybrid_a_star.cc)：全局路线与泊车连接。
+   [`src/open_space/hybrid_a_star.cc`](src/open_space/hybrid_a_star.cc)：带档位的开放空间泊车。
 6. [`src/local/local_planner.cc`](src/local/local_planner.cc) 与
    [`src/speed/speed_planner.cc`](src/speed/speed_planner.cc)：时空耦合中的路径、速度规划。
 
@@ -71,10 +71,11 @@ PlanningFrameAdapter  --非法/缺字段--> INVALID_INPUT
     |  （定位、感知、地图、任务四类校验与归一化）
     v
 GlobalPlanner
-    |-- 车道图 A*：自车最近车道 -> 车位入口最近车道
-    |-- Hybrid A*：车位入口姿态 -> 车位目标姿态
+    +-- 车道图 A*：自车最近车道 -> 车位入口最近车道
     +--失败------------------------------------> NO_ROUTE
     v
+按 8 秒最大可达距离 + 制动/车身余量截取滚动局部参考线
+    |
 重复 path_coupling_iterations 次（默认 2 次）
     |-- LocalPlanner：在 S-L 格点图上求无碰撞、曲率可行的横向路径
     +-- SpeedPlanner：在带速度历史的 S-T 格点图上求进度/速度剖面
@@ -84,21 +85,25 @@ GlobalPlanner
     +--逐点对动态障碍物做最终碰撞检查--失败--> 紧急制动轨迹 / NO_SAFE_TRAJECTORY
     v
 OK + trajectory + diagnostics
+
+到达车位入口并停车后：Hybrid A* -> 按档位切段 -> 单档位 S-T 速度规划
 ```
 
 `Planner::Plan()` 中的关键时序如下：
 
 1. `PlanningFrameAdapter::Adapt()` 依次调用四个适配器，将请求写入 `PlanningFrame`。
-2. `GlobalPlanner::Plan()` 生成 `GlobalRoute`：其中既有经过的 `lane_ids`，也有拼接后的
-   `reference_line`。
-3. 第一次局部规划没有到达时刻信息；`LocalPlanner` 因而按 `t=0` 检查候选路径。
-   `SpeedPlanner` 随后给每个离散路径进度生成到达时刻。
+2. `GlobalPlanner::Plan()` 只生成到车位入口的 `GlobalRoute`；顶层从自车投影处截取有限
+   局部参考线，长度为时间域内最大可达距离加制动和车身余量。
+3. 第一次局部规划按名义速度估计到达时刻，`SpeedPlanner` 随后给离散路径进度生成更准确
+   的到达时刻。
 4. 顶层把速度剖面回投为每个路径点的 `arrivals`，第二轮局部规划据此在预测时刻检查
    动态障碍物，再重新求速度。这是路径—速度的交替耦合，而非一次联合求解。
-5. 通过 `PositionAtS()` 和 `YawAtS()` 将速度点的弧长 `s` 映射回空间路径，形成最终
+5. 到达入口并停车后切换到开放空间模式；Hybrid A* 保留车身姿态、曲率和前进/倒车方向，
+   在 cusp 处分段，换档停车确认后一次只输出一个档位的轨迹。
+6. 通过 `PositionAtS()` 和 `YawAtS()` 将速度点映射回空间路径，形成带显式档位的
    `TimedTrajectoryPoint`；最后用 `IsCollisionFree()` 再检验一次。
 
-如果局部路径或速度剖面任一失败，规划器调用 `MakeStopTrajectory()`，沿当前朝向以
+如果局部路径或速度剖面任一失败，规划器调用 `MakeStopTrajectory()`，沿当前档位方向以
 `max_deceleration_mps2` 匀减速生成停车轨迹，并在诊断中记录该停车轨迹是否无碰撞。
 该紧急停车轨迹以避碰为优先，不受正常速度规划的舒适 jerk 限制；诊断中会记录
 `jerk_constraint=emergency_exempt`。
@@ -121,7 +126,7 @@ OK + trajectory + diagnostics
 这一步只考虑地图拓扑与关闭车道，不考虑动态障碍物；障碍物在之后的局部规划阶段
 处理。
 
-### 2. Hybrid A*：从入口连接到车位目标姿态
+### 2. Hybrid A*：开放空间单档位分段
 
 [`HybridAStar`](src/open_space/hybrid_a_star.cc) 的搜索状态是 `(x, y, yaw)`，兼具连续
 姿态和离散查重，因此称为 Hybrid A*。每次扩展使用：
@@ -131,9 +136,13 @@ OK + trajectory + diagnostics
 - 三个曲率 `{-0.8, 0, 0.8} * max_curvature_1pm`；
 - 栅格键：位置量化到 `0.5 m`，航向量化为每圈 24 格；
 - 代价：行驶距离 + 倒车惩罚 `0.2` + 曲率惩罚；
+- 前进/倒车切换额外惩罚 `2.0`，避免离散搜索产生无意义的频繁换档；
 - 启发式：到目标的距离 + `0.5 *` 航向差。
 
 搜索在距离小于 `0.55 m` 且航向差小于 `0.45 rad` 时成功，最多扩展 30,000 个节点。
+节点同时保存产生它的档位和有符号曲率；回溯结果在方向变化点切成 `ParkingSegment`。
+顶层的 `LANE_APPROACH`、`GEAR_SHIFT`、`OPEN_SPACE_PARKING` 状态机只发布当前单一档位段，
+默认倒车限速 `1.0 m/s`，车辆停止并等待默认 `1.0 s` 后才能换档。
 碰撞检测使用车体和障碍物的有向矩形（长、宽均以各自 `Pose2d` 中心为中心），通过
 分离轴定理（SAT）在两矩形的局部轴上进行精确投影判定。`safety_margin_m` 会膨胀自车
 矩形的半尺寸，边界接触也视为碰撞。这里仍使用每个障碍物的**第一帧预测**，因此开放空间
@@ -141,7 +150,8 @@ OK + trajectory + diagnostics
 
 ### 3. 横向路径选择：完整分层 S-L 动态规划
 
-[`LocalPlanner`](src/local/local_planner.cc) 先以 `path_step_m` 重采样 `reference_line`，
+[`LocalPlanner`](src/local/local_planner.cc) 先以 `path_step_m` 重采样滚动截取后的
+`reference_line`，
 将每个弧长采样点作为一层 `S`，并在每层建立 13 个横向状态
 `l ∈ {-1.8, -1.5, …, 1.5, 1.8} m`。相邻层之间的状态转移构成完整的分层 S-L 格点图。
 为让曲率成为严格可行性条件，DP 状态保存连续两个横向索引 `(l_{i-1}, l_i)`；扩展到
@@ -160,6 +170,7 @@ OK + trajectory + diagnostics
 有序稀疏容器保存，避免分配完整的三维格点并保持确定性回溯。
 
 - 初始状态是 `(t=0, s=0)`。
+- 每一时间层先按当前速度、最大加速度和速度上限计算可达 `s` 上界；超过上界后停止枚举。
 - 转移只允许 `s_{t+1} >= s_t`，并计算 `v_t = (s_t-s_{t-1})/Δt`、
   `a_t = (v_t-v_{t-1})/Δt` 和 `j_t = (a_t-a_{t-1})/Δt`。首步 jerk 使用自车当前
   加速度作为 `a_0`。速度、加减速度和正负 jerk 上下界全部是**严格可行性约束**：
@@ -177,7 +188,7 @@ OK + trajectory + diagnostics
 | --- | --- | --- |
 | `common` | `types.h` | 统一数据模型、配置、状态码和基础几何函数（距离、插值、角度归一化）。 |
 | `interfaces` | `adapters.*` | 规划边界：校验外部请求并写入内部 `PlanningFrame`；协议特定转换应放在这里。 |
-| `map` | `global_planner.*` | 车道有向图 A*，拼出到车位入口的参考线，并调用开放空间连接器。 |
+| `map` | `global_planner.*` | 车道有向图 A*，只拼出到车位入口的全局参考线。 |
 | `open_space` | `hybrid_a_star.*` | 在可前进、可倒车、受曲率约束的离散状态空间中连接入口与车位目标姿态。 |
 | `local` | `local_planner.*` | 在分层 S-L 格点图中规划无碰撞、曲率可行的横向路径，生成带弧长的 `PathPoint`。 |
 | `speed` | `speed_planner.*` | 在带加速度历史的 S-T 格点图中规划满足严格加减速度和 jerk 限制的进度与速度。 |
@@ -207,16 +218,16 @@ avp::PlanningResponse response = planner.Plan(request);
 - 车辆的长、宽、速度/曲率/加减速度/jerk 限制和安全边距必须有效；jerk 代价权重必须为
   有限非负数；`horizon_s >= time_step_s`，
   `time_step_s`、`path_step_m`、`path_coupling_iterations`、车道匹配距离和航向阈值必须为正，
-  且航向阈值不超过 π。
+  且航向阈值不超过 π；倒车限速不得超过车辆限速，换档停止阈值和驻留时间不得为负。
 
-成功时，`PlanningResponse::trajectory` 中每个点包含地图系位姿、曲率、速度、加速度和
-相对本次请求的时间。可通过 `status` 区分：
+成功时，`PlanningResponse::trajectory` 中每个点包含地图系位姿、曲率、非负速度大小、
+加速度、相对时间和显式 `DRIVE`/`REVERSE` 档位。可通过 `status` 区分：
 
 | 状态 | 含义 |
 | --- | --- |
 | `kOk` | 已生成并通过最终矩形车体碰撞检查的时序轨迹。 |
 | `kInvalidInput` | 适配器校验失败。 |
-| `kNoRoute` | 车位不存在、车道拓扑不可达，或 Hybrid A* 无法接入目标位姿。 |
+| `kNoRoute` | 车位不存在或到车位入口的车道拓扑不可达。 |
 | `kNoSafeTrajectory` | 局部路径/速度不可行，或最终校验碰撞；响应包含紧急制动降级轨迹。 |
 | `kInternalError` | 默认初值；当前顶层流程正常返回时通常不会保留该状态。 |
 

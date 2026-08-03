@@ -84,8 +84,13 @@ bool IsCollisionFree(const PlanningFrame& frame, const Pose2d& pose, double arri
 }
 
 // 防止数组越界
-double ArrivalTimeAt(const std::vector<double>& arrival_times, size_t index) {
-  return arrival_times.empty() ? 0.0 : arrival_times[std::min(index, arrival_times.size() - 1)];
+double ArrivalTimeAt(const PlanningFrame& frame, const std::vector<double>& arrival_times,
+                     size_t index, double fallback_s) {
+  if (!arrival_times.empty()) {
+    return arrival_times[std::min(index, arrival_times.size() - 1)];
+  }
+  const double nominal_speed = std::min(frame.vehicle.max_speed_mps, 1.5);
+  return std::min(frame.config.horizon_s, fallback_s / nominal_speed);
 }
 
 // 将一对横向索引映射到格点状态数组下标。
@@ -118,6 +123,10 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   } else {
     reference.insert(reference.begin(), {frame.ego.pose.position, frame.ego.pose.yaw, 0.0});
   }
+  for (size_t index = 1; index < reference.size(); ++index) {
+    reference[index].s =
+        reference[index - 1].s + Distance(reference[index - 1].position, reference[index].position);
+  }
   // 2. 定义横向采样范围
   constexpr int kLateralCount = 13;           // 每层横向采样 13 个候选点
   constexpr double kLateralStepM = 0.3;       // 横向采样间距 0.3 m
@@ -149,7 +158,8 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   const double infinity = std::numeric_limits<double>::infinity();
   std::vector<double> initial_cost(kLateralCount, infinity);
   const int anchor_lateral = kLateralCount / 2;   // 横向偏移为 0 的中心索引
-  if (IsCollisionFree(frame, frame.ego.pose, ArrivalTimeAt(arrival_times, 0))) {
+  if (IsCollisionFree(frame, frame.ego.pose,
+                      ArrivalTimeAt(frame, arrival_times, 0, reference[0].s))) {
     // 如果自车在当前时刻没有和障碍物碰撞，则第 0 层中心点可达，总代价为 0。
     initial_cost[anchor_lateral] = 0.0;
   }
@@ -180,7 +190,8 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
         continue;
       }
       // 检查自车在预计到达第 1 点的时刻，是否会与障碍物碰撞。
-      if (!IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, 1))) {
+      if (!IsCollisionFree(frame, pose,
+                           ArrivalTimeAt(frame, arrival_times, 1, reference[1].s))) {
         continue;
       }
       // 横向变化率 dl / ds，表征 “沿参考线前进时，横向偏移改变得有多快”
@@ -213,7 +224,9 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
           const Vec2 delta{positions[layer][next].x - positions[layer - 1][current].x,
                            positions[layer][next].y - positions[layer - 1][current].y};
           const Pose2d pose{positions[layer][next], std::atan2(delta.y, delta.x)};
-          if (!IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, layer))) {
+          if (!IsCollisionFree(
+                  frame, pose,
+                  ArrivalTimeAt(frame, arrival_times, layer, reference[layer].s))) {
             // 硬约束：禁止碰撞
             continue;
           }
@@ -320,7 +333,7 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   for (size_t index = 0; index < path->size(); ++index) {
     if (path->at(index).curvature > frame.vehicle.max_curvature_1pm ||
         !IsCollisionFree(frame, {path->at(index).position, path->at(index).yaw},
-                         ArrivalTimeAt(arrival_times, index))) {
+                         ArrivalTimeAt(frame, arrival_times, index, reference[index].s))) {
       *error = "selected S-L lattice path is invalid";
       path->clear();
       return false;

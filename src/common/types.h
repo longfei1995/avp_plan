@@ -34,6 +34,19 @@ struct Pose2d {
   Vec2 position;
   double yaw = 0.0;
 };
+enum class DrivingDirection { kUnknown = 0, kDrive = 1, kReverse = 2 };
+
+inline const char* ToString(DrivingDirection direction) {
+  switch (direction) {
+    case DrivingDirection::kDrive:
+      return "DRIVE";
+    case DrivingDirection::kReverse:
+      return "REVERSE";
+    case DrivingDirection::kUnknown:
+      return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
 struct Header {
   std::string frame_id;         
   uint64_t timestamp_ns = 0;    // 当前帧时间戳，单位纳秒
@@ -43,6 +56,7 @@ struct EgoState {
   Pose2d pose;
   double speed_mps = 0.0;
   double acceleration_mps2 = 0.0;
+  DrivingDirection direction = DrivingDirection::kDrive;
 };
 struct PredictionPoint {
   uint64_t timestamp_ns = 0;
@@ -130,6 +144,9 @@ struct PlannerConfig {
   double max_lane_match_distance_m = 2.0;               // 点离车道中心线多远仍可认为属于该车道，默认 2 m
   double max_lane_heading_difference_rad = kPi / 3.0;   // 自车朝向和车道方向允许的最大差异，默认 π/3
   double jerk_weight = 1.0;
+  double max_reverse_speed_mps = 1.0;
+  double gear_shift_stop_speed_mps = 0.05;
+  double gear_shift_dwell_s = 1.0;
 };
 struct PlanningRequest {
   Header header;
@@ -159,6 +176,7 @@ struct TimedTrajectoryPoint {
   double speed_mps = 0.0;
   double acceleration_mps2 = 0.0;
   double relative_time_s = 0.0;
+  DrivingDirection direction = DrivingDirection::kDrive;
 };
 
 enum class PlanningStatus { kOk, kInvalidInput, kNoRoute, kNoSafeTrajectory, kInternalError };

@@ -7,10 +7,25 @@
 #include "common/types.h"
 
 namespace avp {
+struct HybridPathPoint {
+  Pose2d pose;
+  double signed_curvature_1pm = 0.0;
+  DrivingDirection direction = DrivingDirection::kUnknown;
+};
+
+struct ParkingSegment {
+  DrivingDirection direction = DrivingDirection::kUnknown;
+  std::vector<HybridPathPoint> points;
+};
+
+struct ParkingManeuver {
+  std::vector<ParkingSegment> segments;
+};
+
 class HybridAStar {
  public:
   bool Plan(const PlanningFrame& frame, const Pose2d& start, const Pose2d& goal,
-            std::vector<Pose2d>* connection, std::string* error) const;
+            ParkingManeuver* maneuver, std::string* error) const;
 };
 }  // avp 命名空间
 

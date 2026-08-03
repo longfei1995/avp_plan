@@ -61,19 +61,33 @@ double TransitionCost(double speed_mps, double acceleration_mps2, double jerk_mp
 
 // 纵向运动约束：判断一次状态转移是否满足纵向可行性
 bool IsLongitudinalTransitionFeasible(const PlanningFrame& frame, double speed_mps,
-                                      double acceleration_mps2, double jerk_mps3) {
+                                      double acceleration_mps2, double jerk_mps3,
+                                      double max_speed_mps) {
   constexpr double kConstraintTolerance = 1e-9;
-  return speed_mps <= frame.vehicle.max_speed_mps + kConstraintTolerance &&
+  return speed_mps <= max_speed_mps + kConstraintTolerance &&
          acceleration_mps2 <= frame.vehicle.max_acceleration_mps2 + kConstraintTolerance &&
          acceleration_mps2 >= -frame.vehicle.max_deceleration_mps2 - kConstraintTolerance &&
          jerk_mps3 <= frame.vehicle.max_jerk_mps3 + kConstraintTolerance &&
          jerk_mps3 >= frame.vehicle.min_jerk_mps3 - kConstraintTolerance;
 }
 
+double ReachableDistanceUpperBound(const PlanningFrame& frame, double time_s,
+                                   double max_speed_mps) {
+  const double initial_speed = std::min(std::abs(frame.ego.speed_mps), max_speed_mps);
+  const double acceleration = frame.vehicle.max_acceleration_mps2;
+  const double time_to_limit = (max_speed_mps - initial_speed) / acceleration;
+  if (time_s <= time_to_limit) {
+    return initial_speed * time_s + 0.5 * acceleration * time_s * time_s;
+  }
+  return initial_speed * time_to_limit + 0.5 * acceleration * time_to_limit * time_to_limit +
+         max_speed_mps * (time_s - time_to_limit);
+}
+
 }  // namespace
 
 bool SpeedPlanner::Plan(const PlanningFrame& frame, const std::vector<PathPoint>& path,
-                        std::vector<SpeedPoint>* profile, std::string* error) const {
+                        std::vector<SpeedPoint>* profile, std::string* error,
+                        const SpeedPlanOptions& options) const {
   if (profile == nullptr || error == nullptr || path.empty()) {
     return false;
   }
@@ -92,17 +106,25 @@ bool SpeedPlanner::Plan(const PlanningFrame& frame, const std::vector<PathPoint>
   // 1. 初始化常量
   const double infinity = std::numeric_limits<double>::infinity();
   const double time_step = frame.config.time_step_s;
+  const double max_speed = std::min(frame.vehicle.max_speed_mps, options.max_speed_mps);
+  if (!std::isfinite(max_speed) || max_speed <= 0.0) {
+    *error = "speed limit must be positive and finite";
+    return false;
+  }
   // todo,保守的速度限制，后续可以根据车道线曲率和障碍物位置进行动态调整
-  const double desired_speed = std::min(frame.vehicle.max_speed_mps, 1.5);
+  const double desired_speed = std::min(max_speed, 1.5);
   // 2. 从 t0 到 t1 的第一层 DP
   std::vector<double> first_cost(path_count, infinity);
   for (int current = 0; current < path_count; ++current) {
     const double delta_s = path[current].s - path.front().s;
+    if (delta_s > ReachableDistanceUpperBound(frame, time_step, max_speed) + 1e-9) {
+      break;
+    }
     const double speed = delta_s / time_step;
     const double acceleration = (speed - frame.ego.speed_mps) / time_step;
     const double jerk = (acceleration - frame.ego.acceleration_mps2) / time_step;
     const uint64_t timestamp = frame.header.timestamp_ns + static_cast<uint64_t>(time_step * 1e9);
-    if (!IsLongitudinalTransitionFeasible(frame, speed, acceleration, jerk) ||
+    if (!IsLongitudinalTransitionFeasible(frame, speed, acceleration, jerk, max_speed) ||
         IsBlocked(frame, path[current], timestamp)) {
       // 如果候选点超过速度、加速度或 jerk 边界 或者
       // 候选点在 t1 时刻与障碍物碰撞，则该点不可行，跳过
@@ -127,15 +149,19 @@ bool SpeedPlanner::Plan(const PlanningFrame& frame, const std::vector<PathPoint>
       const double previous_acceleration = (previous_speed - frame.ego.speed_mps) / time_step;
       // 枚举 t2 的位置，从previous开始，意味着不允许倒车
       for (int current = previous; current < path_count; ++current) {
+        if (path[current].s - path.front().s >
+            ReachableDistanceUpperBound(frame, 2.0 * time_step, max_speed) + 1e-9) {
+          break;
+        }
         const double delta_s = path[current].s - path[previous].s;
         const double speed = delta_s / time_step;
-        if (speed > frame.vehicle.max_speed_mps + 1e-9) {
+        if (speed > max_speed + 1e-9) {
           // 如果速度超过车辆最大速度，后续的点也会更远，速度只会更大，所以直接跳出循环
           break;
         }
         const double acceleration = (speed - previous_speed) / time_step;
         const double jerk = (acceleration - previous_acceleration) / time_step;
-        if (!IsLongitudinalTransitionFeasible(frame, speed, acceleration, jerk) ||
+        if (!IsLongitudinalTransitionFeasible(frame, speed, acceleration, jerk, max_speed) ||
             IsBlocked(frame, path[current], timestamp)) {
           continue;
         }
@@ -162,14 +188,18 @@ bool SpeedPlanner::Plan(const PlanningFrame& frame, const std::vector<PathPoint>
       const double current_acceleration = (current_speed - previous_speed) / time_step;
       // 枚举下一时间节点 s_k+1, 从 current 开始，意味着不允许倒车
       for (int next = current; next < path_count; ++next) {
+        if (path[next].s - path.front().s >
+            ReachableDistanceUpperBound(frame, time_index * time_step, max_speed) + 1e-9) {
+          break;
+        }
         const double delta_s = path[next].s - path[current].s;
         const double speed = delta_s / time_step;
-        if (speed > frame.vehicle.max_speed_mps + 1e-9) {
+        if (speed > max_speed + 1e-9) {
           break;
         }
         const double acceleration = (speed - current_speed) / time_step;
         const double jerk = (acceleration - current_acceleration) / time_step;
-        if (!IsLongitudinalTransitionFeasible(frame, speed, acceleration, jerk) ||
+        if (!IsLongitudinalTransitionFeasible(frame, speed, acceleration, jerk, max_speed) ||
             IsBlocked(frame, path[next], timestamp)) {
           continue;
         }
@@ -197,19 +227,33 @@ bool SpeedPlanner::Plan(const PlanningFrame& frame, const std::vector<PathPoint>
   if (time_count == 2) {
     // 特殊处理只有 t0,t1 两层的情况
     for (int current = 0; current < path_count; ++current) {
+      if (options.require_stop_at_end &&
+          std::abs(path[current].s - path.front().s) > 1e-9) {
+        continue;
+      }
       const double cost = first_cost[current];
       const double progress_reward = 0.1 * path[current].s;
-      if (cost - progress_reward < final_cost) {
+      const double terminal_penalty =
+          options.require_stop_at_end ? 10.0 * std::pow(path.back().s - path[current].s, 2.0)
+                                      : 0.0;
+      if (cost - progress_reward + terminal_penalty < final_cost) {
         // 更远的可行终点会获得额外奖励
-        final_cost = cost - progress_reward;
+        final_cost = cost - progress_reward + terminal_penalty;
         final_first_index = current;
       }
     }
   } else {  // 一般情况中，遍历最后时间层的所有三元状态
     for (const auto& [state, cost] : state_cost) {
+      if (options.require_stop_at_end && state[1] != state[2]) {
+        continue;
+      }
       const double progress_reward = 0.1 * path[state[2]].s;
-      if (cost - progress_reward < final_cost) {
-        final_cost = cost - progress_reward;
+      const double terminal_penalty =
+          options.require_stop_at_end
+              ? 10.0 * std::pow(path.back().s - path[state[2]].s, 2.0)
+              : 0.0;
+      if (cost - progress_reward + terminal_penalty < final_cost) {
+        final_cost = cost - progress_reward + terminal_penalty;
         final_state = state;
       }
     }

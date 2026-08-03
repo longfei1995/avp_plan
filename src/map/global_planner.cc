@@ -271,21 +271,12 @@ bool GlobalPlanner::Plan(const PlanningFrame& frame, GlobalRoute* route, std::st
   // 追加停车位入口原始坐标，因为停车入口在车道中心线上的最近投影点和停车入口原始坐标可能有偏差，直接使用原始坐标可以保证停车入口的精确性。
   AppendPoint(&route->reference_line, spot->entry_pose.position);
 
-  // 6. Hybrid A* 连接停车入口与目标位姿
-  std::vector<Pose2d> connection;  // 车位入口至停车目标的连接轨迹。
-  if (!hybrid_a_star_.Plan(frame, spot->entry_pose, spot->target_pose, &connection, error)) {
-    return false;
-  }
-  // 把 Hybrid A* 轨迹追加到参考线
-  for (const Pose2d& point : connection) {
-    AppendPoint(&route->reference_line, point.position);
-  }
-  // 最后校验参考线长度是否足够
-  if (route->reference_line.size() < 2) {
+  // 开放空间泊车由顶层在到达入口后独立规划，不拼入车道参考线。
+  if (route->reference_line.empty()) {
     *error = "reference line has no usable length";
     return false;
   }
-  // 保存停车目标， 包含位置和朝向
+  route->parking_entry = spot->entry_pose;
   route->parking_target = spot->target_pose;
   return true;
 }

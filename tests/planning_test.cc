@@ -5,6 +5,7 @@
 
 #include "local/local_planner.h"
 #include "map/global_planner.h"
+#include "open_space/hybrid_a_star.h"
 #include "planning/planner.h"
 #include "speed/speed_planner.h"
 
@@ -24,6 +25,12 @@ bool HasDiagnostic(const avp::PlanningResponse& response, const std::string& dia
     }
   }
   return false;
+}
+double DiagnosticValue(const avp::PlanningResponse& response, const std::string& prefix) {
+  for (const std::string& item : response.diagnostics) {
+    if (item.starts_with(prefix)) return std::stod(item.substr(prefix.size()));
+  }
+  return std::numeric_limits<double>::quiet_NaN();
 }
 double SumSquaredJerk(const std::vector<avp::SpeedPoint>& profile, double time_step_s) {
   double result = 0.0;
@@ -396,6 +403,14 @@ void TestJerkConfigurationValidation() {
   config.jerk_weight = std::numeric_limits<double>::infinity();
   Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
         "non-finite jerk weight must be rejected");
+  config = {};
+  config.max_reverse_speed_mps = 4.0;
+  Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "reverse speed above the vehicle limit must be rejected");
+  config = {};
+  config.gear_shift_dwell_s = -0.1;
+  Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "negative gear-shift dwell must be rejected");
 }
 
 void TestObstacleDimensionValidation() {
@@ -416,6 +431,188 @@ void TestObstacleDimensionValidation() {
   Check(planner.Plan(invalid_width).status == avp::PlanningStatus::kInvalidInput,
         "invalid obstacle width must be rejected");
 }
+
+void TestRollingLocalHorizonIgnoresFarObstacle() {
+  avp::Planner planner;
+  for (const double route_length : {100.0, 1000.0}) {
+    avp::PlanningRequest request;
+    request.header = {"map", 1'000'000'000 + static_cast<uint64_t>(route_length),
+                      static_cast<uint64_t>(route_length)};
+    request.ego.pose = {{0.0, 0.0}, 0.0};
+    request.map.lanes.push_back(
+        {"long", {{0.0, 0.0}, {route_length, 0.0}}, {}, false});
+    request.map.parking_spots.push_back(
+        {"P", {{route_length, 0.0}, 0.0}, {{route_length + 1.0, 0.0}, 0.0}});
+    request.target_parking_spot_id = "P";
+    request.obstacles.push_back(
+        {"far", 1.0, 1.0, 1.0,
+         {{request.header.timestamp_ns, {{0.5 * route_length, 0.0}, 0.0}, 0.0}}});
+
+    const avp::PlanningResponse response = planner.Plan(request);
+    Check(response.status == avp::PlanningStatus::kOk,
+          "obstacle beyond the rolling horizon must not block the current trajectory");
+    const double local_horizon = DiagnosticValue(response, "local_horizon_m=");
+    const double layer_count = DiagnosticValue(response, "path_layer_count=");
+    Check(std::isfinite(local_horizon) && local_horizon >= 25.0 && local_horizon <= 30.0,
+          "default rolling horizon should be derived from reachability and stopping distance");
+    Check(std::isfinite(layer_count) && layer_count <= 65.0,
+          "S-L layer count must stay bounded on 100-meter and one-kilometer routes");
+    Check(response.trajectory.size() == 41,
+          "rolling spatial horizon must not change the default temporal horizon");
+  }
+}
+
+void TestHybridAStarPreservesReverseDirection() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  avp::HybridAStar planner;
+  avp::ParkingManeuver maneuver;
+  std::string error;
+  Check(planner.Plan(frame, {{0.0, 0.0}, 0.0}, {{-1.0, 0.0}, 0.0}, &maneuver, &error),
+        "Hybrid A* should find a straight reverse parking maneuver");
+  Check(!maneuver.segments.empty(), "reverse maneuver must contain a direction segment");
+  Check(maneuver.segments.front().direction == avp::DrivingDirection::kReverse,
+        "a target behind the vehicle must retain REVERSE direction");
+  for (const avp::HybridPathPoint& point : maneuver.segments.front().points) {
+    Check(std::abs(avp::NormalizeAngle(point.pose.yaw)) < 1e-6,
+          "reverse path must preserve body yaw instead of travel tangent yaw");
+  }
+}
+
+void CheckCuspManeuver(const avp::Pose2d& goal, avp::DrivingDirection first,
+                       avp::DrivingDirection second, const char* message) {
+  avp::PlanningFrame frame;
+  avp::HybridAStar planner;
+  avp::ParkingManeuver maneuver;
+  std::string error;
+  Check(planner.Plan(frame, {{0.0, 0.0}, 0.0}, goal, &maneuver, &error), message);
+  Check(maneuver.segments.size() >= 2 && maneuver.segments[0].direction == first &&
+            maneuver.segments[1].direction == second,
+        message);
+  CheckPosition(maneuver.segments[0].points.back().pose.position,
+                maneuver.segments[1].points.front().pose.position,
+                "adjacent gear segments must share the same cusp position");
+  for (const avp::ParkingSegment& segment : maneuver.segments) {
+    Check(segment.points.size() >= 2, "every gear partition must contain usable motion");
+    for (const avp::HybridPathPoint& point : segment.points) {
+      Check(point.direction == segment.direction,
+            "a parking partition must not mix motion directions");
+    }
+  }
+}
+
+void TestHybridAStarPartitionsCusps() {
+  CheckCuspManeuver({{-3.0, -3.0}, 0.0}, avp::DrivingDirection::kReverse,
+                    avp::DrivingDirection::kDrive,
+                    "Hybrid A* should partition a reverse-to-drive cusp");
+  CheckCuspManeuver({{3.0, -2.0}, 0.0}, avp::DrivingDirection::kDrive,
+                    avp::DrivingDirection::kReverse,
+                    "Hybrid A* should partition a drive-to-reverse cusp");
+}
+
+void TestParkingGearShiftAndReverseFallback() {
+  avp::PlanningRequest request;
+  request.header = {"map", 1'000'000'000, 1};
+  request.ego.pose = {{10.0, 0.0}, 0.0};
+  request.ego.direction = avp::DrivingDirection::kDrive;
+  request.map.lanes.push_back({"entry", {{0.0, 0.0}, {10.0, 0.0}}, {}, false});
+  request.map.parking_spots.push_back(
+      {"P", {{10.0, 0.0}, 0.0}, {{9.0, 0.0}, 0.0}});
+  request.target_parking_spot_id = "P";
+
+  avp::Planner planner;
+  const avp::PlanningResponse shift = planner.Plan(request);
+  Check(shift.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(shift, "planning_mode=GEAR_SHIFT"),
+        "reverse parking must first publish a stopped gear-shift trajectory");
+  for (const avp::TimedTrajectoryPoint& point : shift.trajectory) {
+    Check(point.direction == avp::DrivingDirection::kReverse &&
+              NearlyEqual(point.speed_mps, 0.0),
+          "gear-shift trajectory must request REVERSE while remaining stopped");
+  }
+
+  request.header.timestamp_ns += 1'100'000'000;
+  request.header.sequence_id += 1;
+  request.ego.direction = avp::DrivingDirection::kReverse;
+  const avp::PlanningResponse reverse = planner.Plan(request);
+  Check(reverse.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(reverse, "planning_mode=OPEN_SPACE_PARKING"),
+        "parking should enter the reverse segment after dwell and gear feedback");
+  for (const avp::TimedTrajectoryPoint& point : reverse.trajectory) {
+    Check(point.direction == avp::DrivingDirection::kReverse,
+          "a parking trajectory must never mix drive and reverse points");
+    Check(point.speed_mps <= 1.0 + 1e-9, "reverse speed limit must be enforced");
+  }
+  Check(NearlyEqual(reverse.trajectory.back().speed_mps, 0.0),
+        "a reachable parking segment must end at zero speed");
+
+  request.header.timestamp_ns += 200'000'000;
+  request.header.sequence_id += 1;
+  request.obstacles.push_back(
+      {"blocking", 2.0, 2.0, 1.0,
+       {{request.header.timestamp_ns, request.ego.pose, 0.0}}});
+  const avp::PlanningResponse fallback = planner.Plan(request);
+  Check(fallback.status == avp::PlanningStatus::kNoSafeTrajectory,
+        "blocked reverse parking must use the emergency fallback");
+  Check(!fallback.trajectory.empty() &&
+            fallback.trajectory.front().direction == avp::DrivingDirection::kReverse,
+        "reverse emergency fallback must preserve the active gear");
+  for (const avp::TimedTrajectoryPoint& point : fallback.trajectory) {
+    Check(point.pose.position.x <= request.ego.pose.position.x + 1e-9,
+          "reverse emergency fallback must move opposite the body heading");
+  }
+}
+
+void TestParkingCuspRequiresStopAndDwell() {
+  avp::PlanningFrame hybrid_frame;
+  avp::HybridAStar hybrid;
+  avp::ParkingManeuver maneuver;
+  std::string error;
+  const avp::Pose2d goal{{-3.0, -3.0}, 0.0};
+  Check(hybrid.Plan(hybrid_frame, {{0.0, 0.0}, 0.0}, goal, &maneuver, &error) &&
+            maneuver.segments.size() >= 2,
+        "cusp state-machine test requires a multi-gear maneuver");
+  const avp::Pose2d cusp = maneuver.segments[0].points.back().pose;
+
+  avp::PlanningRequest request;
+  request.header = {"map", 1'000'000'000, 1};
+  request.ego.pose = {{0.0, 0.0}, 0.0};
+  request.ego.direction = avp::DrivingDirection::kReverse;
+  request.map.lanes.push_back({"entry", {{-5.0, 0.0}, {0.0, 0.0}}, {}, false});
+  request.map.parking_spots.push_back({"P", {{0.0, 0.0}, 0.0}, goal});
+  request.target_parking_spot_id = "P";
+
+  avp::Planner planner;
+  const avp::PlanningResponse first_segment = planner.Plan(request);
+  Check(first_segment.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(first_segment, "gear=REVERSE"),
+        "parking should publish only the first reverse segment before the cusp");
+
+  request.header.timestamp_ns += 200'000'000;
+  request.header.sequence_id += 1;
+  request.ego.pose = cusp;
+  request.ego.speed_mps = 0.0;
+  const avp::PlanningResponse shift = planner.Plan(request);
+  Check(shift.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(shift, "planning_mode=GEAR_SHIFT") && HasDiagnostic(shift, "gear=DRIVE"),
+        "reaching a cusp at zero speed must start the next gear-shift dwell");
+  for (const avp::TimedTrajectoryPoint& point : shift.trajectory) {
+    Check(NearlyEqual(point.speed_mps, 0.0), "cusp gear-shift dwell must remain stationary");
+  }
+
+  request.header.timestamp_ns += 1'100'000'000;
+  request.header.sequence_id += 1;
+  request.ego.direction = avp::DrivingDirection::kDrive;
+  const avp::PlanningResponse next_segment = planner.Plan(request);
+  Check(next_segment.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(next_segment, "planning_mode=OPEN_SPACE_PARKING") &&
+            HasDiagnostic(next_segment, "gear=DRIVE"),
+        "the next drive segment may start only after dwell and gear feedback");
+  for (const avp::TimedTrajectoryPoint& point : next_segment.trajectory) {
+    Check(point.direction == avp::DrivingDirection::kDrive,
+          "post-cusp output must contain only the new gear");
+  }
+}
 }  // 匿名命名空间
 
 int main() {
@@ -433,6 +630,11 @@ int main() {
   TestNoJerkFeasibleSpeedProfile();
   TestJerkConfigurationValidation();
   TestObstacleDimensionValidation();
+  TestRollingLocalHorizonIgnoresFarObstacle();
+  TestHybridAStarPreservesReverseDirection();
+  TestHybridAStarPartitionsCusps();
+  TestParkingGearShiftAndReverseFallback();
+  TestParkingCuspRequiresStopAndDwell();
   avp::Planner planner;
   const avp::PlanningRequest request = MakeRequest();
   const avp::PlanningResponse first = planner.Plan(request);
