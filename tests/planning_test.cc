@@ -3,6 +3,7 @@
 #include <iostream>
 #include <limits>
 
+#include "interfaces/adapters.h"
 #include "local/local_planner.h"
 #include "map/global_planner.h"
 #include "open_space/hybrid_a_star.h"
@@ -381,7 +382,7 @@ void TestNoJerkFeasibleSpeedProfile() {
         "jerk infeasibility should be reported explicitly");
 }
 
-void TestJerkConfigurationValidation() {
+void TestConfigurationValidation() {
   avp::VehicleConfig vehicle;
   vehicle.min_jerk_mps3 = 0.0;
   Check(avp::Planner(vehicle).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
@@ -394,6 +395,14 @@ void TestJerkConfigurationValidation() {
   vehicle.min_jerk_mps3 = std::numeric_limits<double>::quiet_NaN();
   Check(avp::Planner(vehicle).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
         "non-finite minimum jerk must be rejected");
+  for (const double invalid_wheelbase :
+       {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity()}) {
+    vehicle = {};
+    vehicle.wheelbase_m = invalid_wheelbase;
+    Check(avp::Planner(vehicle).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+          "non-positive and non-finite wheelbase must be rejected");
+  }
 
   avp::PlannerConfig config;
   config.jerk_weight = -1.0;
@@ -411,6 +420,46 @@ void TestJerkConfigurationValidation() {
   config.gear_shift_dwell_s = -0.1;
   Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
         "negative gear-shift dwell must be rejected");
+}
+
+void TestPlanningFrameAdapterFailureIsAtomic() {
+  avp::MapSnapshot sentinel_map;
+  avp::PlanningFrame frame;
+  frame.header = {"sentinel", 42, 7};
+  frame.ego.pose = {{1.0, 2.0}, 0.3};
+  frame.ego.speed_mps = 0.4;
+  frame.map = &sentinel_map;
+  frame.target_parking_spot_id = "sentinel_target";
+  frame.obstacles.push_back({});
+  frame.obstacles.front().id = "sentinel_obstacle";
+  frame.vehicle.length_m = 9.0;
+  frame.vehicle.wheelbase_m = 5.0;
+  frame.config.horizon_s = 99.0;
+  frame.config.time_step_s = 0.1;
+
+  avp::PlanningRequest invalid_request = MakeRequest();
+  invalid_request.target_parking_spot_id.clear();
+  avp::PlanningFrameAdapter adapter;
+  std::string error;
+  Check(!adapter.Adapt(invalid_request, {}, {}, &frame, &error),
+        "invalid task must fail frame adaptation");
+  Check(error == "target parking spot is required", "task validation error must be preserved");
+  Check(frame.header.frame_id == "sentinel" && frame.header.timestamp_ns == 42 &&
+            frame.header.sequence_id == 7,
+        "failed adaptation must preserve the output header");
+  CheckPosition(frame.ego.pose.position, {1.0, 2.0},
+                "failed adaptation must preserve the output ego pose");
+  Check(NearlyEqual(frame.ego.pose.yaw, 0.3) && NearlyEqual(frame.ego.speed_mps, 0.4),
+        "failed adaptation must preserve the output ego state");
+  Check(frame.map == &sentinel_map, "failed adaptation must preserve the output map pointer");
+  Check(frame.target_parking_spot_id == "sentinel_target",
+        "failed adaptation must preserve the output task");
+  Check(frame.obstacles.size() == 1 && frame.obstacles.front().id == "sentinel_obstacle",
+        "failed adaptation must preserve the output obstacles");
+  Check(NearlyEqual(frame.vehicle.length_m, 9.0) && NearlyEqual(frame.vehicle.wheelbase_m, 5.0),
+        "failed adaptation must preserve the output vehicle configuration");
+  Check(NearlyEqual(frame.config.horizon_s, 99.0) && NearlyEqual(frame.config.time_step_s, 0.1),
+        "failed adaptation must preserve the output planner configuration");
 }
 
 void TestObstacleDimensionValidation() {
@@ -628,7 +677,8 @@ int main() {
   TestJerkUsesInitialAccelerationAndShortHorizons();
   TestJerkCostPrefersSmootherProfile();
   TestNoJerkFeasibleSpeedProfile();
-  TestJerkConfigurationValidation();
+  TestConfigurationValidation();
+  TestPlanningFrameAdapterFailureIsAtomic();
   TestObstacleDimensionValidation();
   TestRollingLocalHorizonIgnoresFarObstacle();
   TestHybridAStarPreservesReverseDirection();

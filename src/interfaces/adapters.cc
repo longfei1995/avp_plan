@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <unordered_set>
+#include <utility>
 
 namespace avp {
 namespace {
@@ -9,6 +10,54 @@ namespace {
 bool IsFinite(double value) { return std::isfinite(value); }
 bool IsValidPose(const Pose2d& pose) {
   return IsFinite(pose.position.x) && IsFinite(pose.position.y) && IsFinite(pose.yaw);
+}
+
+bool ValidateVehicleConfig(const VehicleConfig& vehicle, std::string* error) {
+  if (!IsFinite(vehicle.length_m) || !IsFinite(vehicle.width_m) ||
+      !IsFinite(vehicle.wheelbase_m) || !IsFinite(vehicle.max_speed_mps) ||
+      !IsFinite(vehicle.max_acceleration_mps2) ||
+      !IsFinite(vehicle.max_deceleration_mps2) || !IsFinite(vehicle.min_jerk_mps3) ||
+      !IsFinite(vehicle.max_jerk_mps3) || !IsFinite(vehicle.max_curvature_1pm) ||
+      !IsFinite(vehicle.safety_margin_m) || vehicle.length_m <= 0.0 || vehicle.width_m <= 0.0 ||
+      vehicle.wheelbase_m <= 0.0 || vehicle.max_speed_mps <= 0.0 ||
+      vehicle.max_acceleration_mps2 <= 0.0 || vehicle.max_deceleration_mps2 <= 0.0 ||
+      vehicle.min_jerk_mps3 >= 0.0 || vehicle.max_jerk_mps3 <= 0.0 ||
+      vehicle.max_curvature_1pm <= 0.0 || vehicle.safety_margin_m < 0.0) {
+    *error = "invalid vehicle configuration";
+    return false;
+  }
+  return true;
+}
+
+bool ValidatePlannerConfig(const PlannerConfig& config, const VehicleConfig& vehicle,
+                           std::string* error) {
+  if (!IsFinite(config.horizon_s) || !IsFinite(config.time_step_s) ||
+      !IsFinite(config.path_step_m) || !IsFinite(config.max_lane_match_distance_m) ||
+      !IsFinite(config.max_lane_heading_difference_rad) || !IsFinite(config.jerk_weight) ||
+      !IsFinite(config.max_reverse_speed_mps) ||
+      !IsFinite(config.gear_shift_stop_speed_mps) || !IsFinite(config.gear_shift_dwell_s) ||
+      config.horizon_s < config.time_step_s || config.time_step_s <= 0.0 ||
+      config.path_step_m <= 0.0 || config.path_coupling_iterations <= 0 ||
+      config.max_lane_match_distance_m <= 0.0 ||
+      config.max_lane_heading_difference_rad <= 0.0 ||
+      config.max_lane_heading_difference_rad > kPi || config.jerk_weight < 0.0 ||
+      config.max_reverse_speed_mps <= 0.0 ||
+      config.max_reverse_speed_mps > vehicle.max_speed_mps ||
+      config.gear_shift_stop_speed_mps < 0.0 || config.gear_shift_dwell_s < 0.0) {
+    *error = "invalid planner configuration";
+    return false;
+  }
+  return true;
+}
+
+bool ValidateEgoLimits(const EgoState& ego, const VehicleConfig& vehicle, std::string* error) {
+  if (std::abs(ego.speed_mps) > vehicle.max_speed_mps + 1e-9 ||
+      ego.acceleration_mps2 > vehicle.max_acceleration_mps2 + 1e-9 ||
+      ego.acceleration_mps2 < -vehicle.max_deceleration_mps2 - 1e-9) {
+    *error = "ego state violates vehicle longitudinal limits";
+    return false;
+  }
+  return true;
 }
 }  // namespace
 
@@ -117,46 +166,23 @@ bool PlanningFrameAdapter::Adapt(const PlanningRequest& request, const VehicleCo
     return false;
   }
   // 检查车辆配置
-  if (!IsFinite(vehicle.length_m) || !IsFinite(vehicle.width_m) ||
-      !IsFinite(vehicle.max_speed_mps) || !IsFinite(vehicle.max_acceleration_mps2) ||
-      !IsFinite(vehicle.max_deceleration_mps2) || !IsFinite(vehicle.min_jerk_mps3) ||
-      !IsFinite(vehicle.max_jerk_mps3) || !IsFinite(vehicle.max_curvature_1pm) ||
-      !IsFinite(vehicle.safety_margin_m) || vehicle.length_m <= 0.0 || vehicle.width_m <= 0.0 ||
-      vehicle.max_speed_mps <= 0.0 || vehicle.max_acceleration_mps2 <= 0.0 ||
-      vehicle.max_deceleration_mps2 <= 0.0 || vehicle.min_jerk_mps3 >= 0.0 ||
-      vehicle.max_jerk_mps3 <= 0.0 || vehicle.max_curvature_1pm <= 0.0 ||
-      vehicle.safety_margin_m < 0.0) {
-    *error = "invalid vehicle configuration";
-    return false;
-  }
+  if (!ValidateVehicleConfig(vehicle, error)) return false;
   // 检查规划配置
-  if (!IsFinite(config.horizon_s) || !IsFinite(config.time_step_s) ||
-      !IsFinite(config.path_step_m) || !IsFinite(config.max_lane_match_distance_m) ||
-      !IsFinite(config.max_lane_heading_difference_rad) || !IsFinite(config.jerk_weight) ||
-      !IsFinite(config.max_reverse_speed_mps) ||
-      !IsFinite(config.gear_shift_stop_speed_mps) || !IsFinite(config.gear_shift_dwell_s) ||
-      config.horizon_s < config.time_step_s || config.time_step_s <= 0.0 ||
-      config.path_step_m <= 0.0 || config.path_coupling_iterations <= 0 ||
-      config.max_lane_match_distance_m <= 0.0 ||
-      config.max_lane_heading_difference_rad <= 0.0 ||
-      config.max_lane_heading_difference_rad > kPi || config.jerk_weight < 0.0 ||
-      config.max_reverse_speed_mps <= 0.0 ||
-      config.max_reverse_speed_mps > vehicle.max_speed_mps ||
-      config.gear_shift_stop_speed_mps < 0.0 || config.gear_shift_dwell_s < 0.0) {
-    *error = "invalid planner configuration";
-    return false;
-  }
+  if (!ValidatePlannerConfig(config, vehicle, error)) return false;
+
+  PlanningFrame candidate;
+  candidate.vehicle = vehicle;
+  candidate.config = config;
+  if (!localization_adapter_.Adapt(request, &candidate, error)) return false;
   // 检查底盘状态
-  if (std::abs(request.ego.speed_mps) > vehicle.max_speed_mps + 1e-9 ||
-      request.ego.acceleration_mps2 > vehicle.max_acceleration_mps2 + 1e-9 ||
-      request.ego.acceleration_mps2 < -vehicle.max_deceleration_mps2 - 1e-9) {
-    *error = "ego state violates vehicle longitudinal limits";
+  if (!ValidateEgoLimits(candidate.ego, vehicle, error)) return false;
+  if (!perception_adapter_.Adapt(request, &candidate, error) ||
+      !map_adapter_.Adapt(request, &candidate, error) ||
+      !task_adapter_.Adapt(request, &candidate, error)) {
     return false;
   }
-  frame->vehicle = vehicle;
-  frame->config = config;
-  return localization_adapter_.Adapt(request, frame, error) &&
-         perception_adapter_.Adapt(request, frame, error) &&
-         map_adapter_.Adapt(request, frame, error) && task_adapter_.Adapt(request, frame, error);
+
+  *frame = std::move(candidate);
+  return true;
 }
 }  // namespace avp
