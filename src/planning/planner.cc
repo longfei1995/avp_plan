@@ -524,11 +524,11 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
     return response;
   }
   // 2. 检查目标车位是否切换
-  // 目标改变时，清空旧任务的泊车路径、段索引、换挡等待状态
   if (active_target_parking_spot_id_ != frame.target_parking_spot_id) {
+    // 目标改变时，清空旧任务的泊车路径、段索引、换挡等待状态
     ResetTask(frame.target_parking_spot_id);
   }
-  // 3. 一旦进入开放空间泊车流程，不再每周期重新生成全局路线，而是直接执行当前 Hybrid A* 泊车动作
+  // 3. 一旦进入泊车流程，不再每周期重新生成全局路线，而是直接执行当前 Hybrid A* 泊车动作
   // 这保证泊车阶段的行为连续，避免因全局路线变化造成状态混乱
   if (mode_ != Mode::kLaneApproach) {
     return PlanParking(frame);
