@@ -86,6 +86,7 @@ struct MapSnapshot {
   std::vector<ParkingSpot> parking_spots;
 };
 
+// 车辆几何与动力学约束
 struct VehicleConfig {
   double length_m = 4.8;
   double width_m = 2.0;
@@ -137,7 +138,7 @@ inline bool IsVehicleObstacleCollision(const Pose2d& vehicle_pose, const Vehicle
 
 struct PlannerConfig {
   double horizon_s = 8.0;
-  double time_step_s = 0.2;
+  double time_step_s = 0.2;   // 一个规划周期的时间长度，单位秒
   double path_step_m = 0.5;
   double input_max_age_s = 0.5;
   int path_coupling_iterations = 2;

@@ -116,6 +116,7 @@ bool PlanningFrameAdapter::Adapt(const PlanningRequest& request, const VehicleCo
   if (frame == nullptr || error == nullptr) {
     return false;
   }
+  // 检查车辆配置
   if (!IsFinite(vehicle.length_m) || !IsFinite(vehicle.width_m) ||
       !IsFinite(vehicle.max_speed_mps) || !IsFinite(vehicle.max_acceleration_mps2) ||
       !IsFinite(vehicle.max_deceleration_mps2) || !IsFinite(vehicle.min_jerk_mps3) ||
@@ -128,6 +129,7 @@ bool PlanningFrameAdapter::Adapt(const PlanningRequest& request, const VehicleCo
     *error = "invalid vehicle configuration";
     return false;
   }
+  // 检查规划配置
   if (!IsFinite(config.horizon_s) || !IsFinite(config.time_step_s) ||
       !IsFinite(config.path_step_m) || !IsFinite(config.max_lane_match_distance_m) ||
       !IsFinite(config.max_lane_heading_difference_rad) || !IsFinite(config.jerk_weight) ||
@@ -144,6 +146,7 @@ bool PlanningFrameAdapter::Adapt(const PlanningRequest& request, const VehicleCo
     *error = "invalid planner configuration";
     return false;
   }
+  // 检查底盘状态
   if (std::abs(request.ego.speed_mps) > vehicle.max_speed_mps + 1e-9 ||
       request.ego.acceleration_mps2 > vehicle.max_acceleration_mps2 + 1e-9 ||
       request.ego.acceleration_mps2 < -vehicle.max_deceleration_mps2 - 1e-9) {
