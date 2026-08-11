@@ -612,6 +612,50 @@ void TestParkingGearShiftAndReverseFallback() {
   }
 }
 
+void TestParkingDeviationReplanIsBoundedPerFrame() {
+  avp::PlanningRequest request;
+  request.header = {"map", 1'000'000'000, 1};
+  request.ego.pose = {{10.0, 0.0}, 0.0};
+  request.ego.direction = avp::DrivingDirection::kDrive;
+  request.map.lanes.push_back({"entry", {{0.0, 0.0}, {10.0, 0.0}}, {}, false});
+  request.map.parking_spots.push_back(
+      {"P", {{10.0, 0.0}, 0.0}, {{9.0, 0.0}, 0.0}});
+  request.target_parking_spot_id = "P";
+
+  avp::Planner planner;
+  const avp::PlanningResponse shift = planner.Plan(request);
+  Check(shift.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(shift, "planning_mode=GEAR_SHIFT"),
+        "deviation test must first enter the reverse gear-shift state");
+
+  request.header.timestamp_ns += 1'100'000'000;
+  request.header.sequence_id += 1;
+  request.ego.direction = avp::DrivingDirection::kReverse;
+  const avp::PlanningResponse initial_parking = planner.Plan(request);
+  Check(initial_parking.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(initial_parking, "planning_mode=OPEN_SPACE_PARKING"),
+        "deviation test must first activate the original parking maneuver");
+
+  request.header.timestamp_ns += 200'000'000;
+  request.header.sequence_id += 1;
+  request.ego.pose.position.x = 12.0;
+  const avp::PlanningResponse replanned = planner.Plan(request);
+  Check(replanned.status == avp::PlanningStatus::kOk &&
+            HasDiagnostic(replanned, "planning_mode=OPEN_SPACE_PARKING"),
+        "the first parking-path deviation must replan from the current pose");
+  Check(!replanned.trajectory.empty(), "a successful deviation replan must publish a trajectory");
+  CheckPosition(replanned.trajectory.front().pose.position, request.ego.pose.position,
+                "a deviation replan must anchor its trajectory at the current ego pose");
+
+  // 保持同一时间戳，再次移动到新轨迹之外，验证不会在一个规划帧内重复重规划。
+  request.ego.pose.position.x = 14.0;
+  const avp::PlanningResponse limited = planner.Plan(request);
+  Check(limited.status == avp::PlanningStatus::kNoSafeTrajectory,
+        "a repeated deviation in the same frame must use the fallback");
+  Check(limited.message == "parking replan already attempted for current frame",
+        "the repeated deviation must report the per-frame replan limit");
+}
+
 void TestParkingCuspRequiresStopAndDwell() {
   avp::PlanningFrame hybrid_frame;
   avp::HybridAStar hybrid;
@@ -684,6 +728,7 @@ int main() {
   TestHybridAStarPreservesReverseDirection();
   TestHybridAStarPartitionsCusps();
   TestParkingGearShiftAndReverseFallback();
+  TestParkingDeviationReplanIsBoundedPerFrame();
   TestParkingCuspRequiresStopAndDwell();
   avp::Planner planner;
   const avp::PlanningRequest request = MakeRequest();

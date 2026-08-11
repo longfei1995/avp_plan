@@ -32,6 +32,8 @@ class Planner {
       5. 失败时重规划或紧急停车。
   */
   PlanningResponse PlanParking(const PlanningFrame& frame);
+  // 从当前车辆位姿重新生成泊车动作；同一规划帧最多尝试一次
+  bool ReplanParking(const PlanningFrame& frame, std::string* error);
   // 当目标车位改变时，清除上一任务遗留的状态，重新开始
   void ResetTask(const std::string& target_parking_spot_id);
 

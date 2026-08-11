@@ -370,144 +370,161 @@ void Planner::ResetTask(const std::string& target_parking_spot_id) {
   pending_direction_ = DrivingDirection::kUnknown;
 }
 
-PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
-  // 1. 判断全部泊车段是否执行完毕
-  if (parking_segment_index_ >= parking_maneuver_.segments.size()) {
-    PlanningResponse response;
-    response.header = frame.header;
-    response.status = PlanningStatus::kOk;
-    response.message = "parking maneuver completed";
-    response.trajectory = MakeStationaryTrajectory(frame, frame.ego.direction);
-    response.diagnostics = {"planning_mode=OPEN_SPACE_PARKING", "parking_complete=true"};
-    return response;
+bool Planner::ReplanParking(const PlanningFrame& frame, std::string* error) {
+  if (last_parking_replan_timestamp_ns_ == frame.header.timestamp_ns) {
+    *error = "parking replan already attempted for current frame";
+    return false;
   }
-  // 2. 换挡逻辑
-  const ParkingSegment& segment = parking_maneuver_.segments[parking_segment_index_];
-  if (mode_ == Mode::kGearShift) {
-    const double elapsed_s =
-        frame.header.timestamp_ns >= gear_shift_start_timestamp_ns_
-            ? static_cast<double>(frame.header.timestamp_ns - gear_shift_start_timestamp_ns_) / 1e9
-            : 0.0;
-    if (std::abs(frame.ego.speed_mps) > frame.config.gear_shift_stop_speed_mps ||
-        elapsed_s < frame.config.gear_shift_dwell_s || frame.ego.direction != pending_direction_) {
-      // 若满足以上任一条件，则继续等待换挡完成，输出静止轨迹
-      // 车速还没低到换挡阈值 || 换挡等待时间还没到 || 底盘/控制反馈的当前挡位还没有切换为目标方向
+
+  last_parking_replan_timestamp_ns_ = frame.header.timestamp_ns;
+  const ParkingSpot* spot = nullptr;
+  for (const ParkingSpot& candidate : frame.map->parking_spots) {
+    if (candidate.id == frame.target_parking_spot_id) {
+      spot = &candidate;
+      break;
+    }
+  }
+  if (spot == nullptr) {
+    *error = "target parking spot not found during parking replan";
+    return false;
+  }
+
+  ParkingManeuver replanned;
+  if (!hybrid_a_star_.Plan(frame, frame.ego.pose, spot->target_pose, &replanned, error)) {
+    return false;
+  }
+
+  parking_maneuver_ = std::move(replanned);
+  parking_segment_index_ = 0;
+  mode_ = Mode::kOpenSpaceParking;
+  gear_shift_start_timestamp_ns_ = 0;
+  pending_direction_ = DrivingDirection::kUnknown;
+  return true;
+}
+
+PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
+  while (true) {
+    // 1. 判断全部泊车段是否执行完毕
+    if (parking_segment_index_ >= parking_maneuver_.segments.size()) {
       PlanningResponse response;
       response.header = frame.header;
       response.status = PlanningStatus::kOk;
-      response.message = "waiting for safe gear shift";
-      response.trajectory = MakeStationaryTrajectory(frame, pending_direction_);
-      response.diagnostics = {"planning_mode=GEAR_SHIFT",
-                              std::string("gear=") + ToString(pending_direction_),
-                              "parking_segment_index=" + std::to_string(parking_segment_index_)};
+      response.message = "parking maneuver completed";
+      response.trajectory = MakeStationaryTrajectory(frame, frame.ego.direction);
+      response.diagnostics = {"planning_mode=OPEN_SPACE_PARKING", "parking_complete=true"};
       return response;
     }
-    mode_ = Mode::kOpenSpaceParking;
-  }
-  // 3. 档位不一致时，递归调用自己，进入换挡阶段
-  if (frame.ego.direction != segment.direction) {
-    mode_ = Mode::kGearShift;
-    pending_direction_ = segment.direction;
-    gear_shift_start_timestamp_ns_ = frame.header.timestamp_ns;
-    return PlanParking(frame);
-  }
-  // 4. 生成当前泊车段局部路径
-  const double max_speed = segment.direction == DrivingDirection::kReverse
-                               ? frame.config.max_reverse_speed_mps
-                               : frame.vehicle.max_speed_mps;
-  const double max_path_length = MaximumTravelDistance(frame, max_speed);
-  double nearest_distance = 0.0;
-  bool reaches_end = false;
-  std::vector<PathPoint> path =
-      BuildParkingPath(frame, segment, max_path_length, max_speed, &nearest_distance, &reaches_end);
-  if (nearest_distance > kParkingSegmentDeviationM) {
-    // 偏离旧泊车轨迹时重规划
-    std::string error;
-    ParkingManeuver replanned;
-    const ParkingSpot* spot = nullptr;
-    for (const ParkingSpot& candidate : frame.map->parking_spots) {
-      if (candidate.id == frame.target_parking_spot_id) {
-        spot = &candidate;
-        break;
+
+    // 2. 换挡逻辑
+    if (mode_ == Mode::kGearShift) {
+      const double elapsed_s =
+          frame.header.timestamp_ns >= gear_shift_start_timestamp_ns_
+              ? static_cast<double>(frame.header.timestamp_ns - gear_shift_start_timestamp_ns_) /
+                    1e9
+              : 0.0;
+      if (std::abs(frame.ego.speed_mps) > frame.config.gear_shift_stop_speed_mps ||
+          elapsed_s < frame.config.gear_shift_dwell_s ||
+          frame.ego.direction != pending_direction_) {
+        // 若满足以上任一条件，则继续等待换挡完成，输出静止轨迹
+        // 车速还没低到换挡阈值 || 换挡等待时间还没到 ||
+        // 底盘/控制反馈的当前挡位还没有切换为目标方向
+        PlanningResponse response;
+        response.header = frame.header;
+        response.status = PlanningStatus::kOk;
+        response.message = "waiting for safe gear shift";
+        response.trajectory = MakeStationaryTrajectory(frame, pending_direction_);
+        response.diagnostics = {"planning_mode=GEAR_SHIFT",
+                                std::string("gear=") + ToString(pending_direction_),
+                                "parking_segment_index=" + std::to_string(parking_segment_index_)};
+        return response;
       }
+      mode_ = Mode::kOpenSpaceParking;
     }
-    if (spot == nullptr ||
-        !hybrid_a_star_.Plan(frame, frame.ego.pose, spot->target_pose, &replanned, &error)) {
-      return MakeFallbackResponse(frame, error.empty() ? "parking replan failed" : error,
+
+    // 每次循环都在状态更新后重新取得当前段，避免引用已被替换的泊车动作。
+    const ParkingSegment& segment = parking_maneuver_.segments[parking_segment_index_];
+
+    // 3. 档位不一致时，进入换挡阶段
+    if (frame.ego.direction != segment.direction) {
+      mode_ = Mode::kGearShift;
+      pending_direction_ = segment.direction;
+      gear_shift_start_timestamp_ns_ = frame.header.timestamp_ns;
+      continue;
+    }
+
+    // 4. 生成当前泊车段局部路径
+    const double max_speed = segment.direction == DrivingDirection::kReverse
+                                 ? frame.config.max_reverse_speed_mps
+                                 : frame.vehicle.max_speed_mps;
+    const double max_path_length = MaximumTravelDistance(frame, max_speed);
+    double nearest_distance = 0.0;
+    bool reaches_end = false;
+    std::vector<PathPoint> path = BuildParkingPath(frame, segment, max_path_length, max_speed,
+                                                   &nearest_distance, &reaches_end);
+    if (nearest_distance > kParkingSegmentDeviationM) {
+      // 偏离旧泊车轨迹时，同一规划帧最多重规划一次。
+      std::string replan_error;
+      if (ReplanParking(frame, &replan_error)) {
+        continue;
+      }
+      return MakeFallbackResponse(frame,
+                                  replan_error.empty() ? "parking replan failed" : replan_error,
                                   "OPEN_SPACE_PARKING");
     }
-    parking_maneuver_ = std::move(replanned);
-    parking_segment_index_ = 0;
-    return PlanParking(frame);
-  }
-  // 5. 判断当前泊车段是否结束（点数不够 ||
-  // 当前局部路径覆盖段终点，车辆位置接近段终点，并且已经基本停住）
-  if (path.size() < 2 ||
-      (reaches_end &&
-       Distance(frame.ego.pose.position, segment.points.back().pose.position) <
-           kParkingEntryToleranceM &&
-       std::abs(frame.ego.speed_mps) <= frame.config.gear_shift_stop_speed_mps)) {
-    if (parking_segment_index_ + 1 >= parking_maneuver_.segments.size()) {
-      // 已经是最后一段
+
+    // 5. 判断当前泊车段是否结束（点数不够 ||
+    // 当前局部路径覆盖段终点，车辆位置接近段终点，并且已经基本停住）
+    if (path.size() < 2 ||
+        (reaches_end &&
+         Distance(frame.ego.pose.position, segment.points.back().pose.position) <
+             kParkingEntryToleranceM &&
+         std::abs(frame.ego.speed_mps) <= frame.config.gear_shift_stop_speed_mps)) {
       ++parking_segment_index_;
-      return PlanParking(frame);
-    }
-    ++parking_segment_index_;
-    pending_direction_ = parking_maneuver_.segments[parking_segment_index_].direction;
-    mode_ = Mode::kGearShift;
-    gear_shift_start_timestamp_ns_ = frame.header.timestamp_ns;
-    return PlanParking(frame);
-  }
-  // 6. 为泊车路径生成速度
-  std::vector<SpeedPoint> speed;
-  std::string error;
-  if (!speed_planner_.Plan(frame, path, &speed, &error, {max_speed, false})) {
-    return MakeFallbackResponse(frame, error, "OPEN_SPACE_PARKING");
-  }
-  if (reaches_end && speed.back().s >= path.back().s - 0.1) {
-    // 若当前局部路径已覆盖泊车段终点 && 正常速度规划也确实会走到路径末端附近
-    // 重新规划 => 要求在终点停车
-    std::vector<SpeedPoint> stopped_speed;
-    std::string stop_error;
-    if (speed_planner_.Plan(frame, path, &stopped_speed, &stop_error, {max_speed, true})) {
-      speed = std::move(stopped_speed);
-    }
-  }
-  // 7. 轨迹合成、碰撞校验和二次重规划
-  PlanningResponse response;
-  response.header = frame.header;
-  response.trajectory = ComposeTrajectory(path, speed, segment.direction);
-  if (!IsCollisionFree(frame, response.trajectory)) {
-    // 同一时间戳最多重规划一次，防止递归重规划死循环
-    if (last_parking_replan_timestamp_ns_ != frame.header.timestamp_ns) {
-      const ParkingSpot* spot = nullptr;
-      for (const ParkingSpot& candidate : frame.map->parking_spots) {
-        if (candidate.id == frame.target_parking_spot_id) {
-          spot = &candidate;
-          break;
-        }
+      if (parking_segment_index_ < parking_maneuver_.segments.size()) {
+        pending_direction_ = parking_maneuver_.segments[parking_segment_index_].direction;
+        mode_ = Mode::kGearShift;
+        gear_shift_start_timestamp_ns_ = frame.header.timestamp_ns;
       }
-      ParkingManeuver replanned;
+      continue;
+    }
+
+    // 6. 为泊车路径生成速度
+    std::vector<SpeedPoint> speed;
+    std::string error;
+    if (!speed_planner_.Plan(frame, path, &speed, &error, {max_speed, false})) {
+      return MakeFallbackResponse(frame, error, "OPEN_SPACE_PARKING");
+    }
+    if (reaches_end && speed.back().s >= path.back().s - 0.1) {
+      // 若当前局部路径已覆盖泊车段终点 && 正常速度规划也确实会走到路径末端附近
+      // 重新规划 => 要求在终点停车
+      std::vector<SpeedPoint> stopped_speed;
+      std::string stop_error;
+      if (speed_planner_.Plan(frame, path, &stopped_speed, &stop_error, {max_speed, true})) {
+        speed = std::move(stopped_speed);
+      }
+    }
+
+    // 7. 轨迹合成、碰撞校验和二次重规划
+    PlanningResponse response;
+    response.header = frame.header;
+    response.trajectory = ComposeTrajectory(path, speed, segment.direction);
+    if (!IsCollisionFree(frame, response.trajectory)) {
       std::string replan_error;
-      last_parking_replan_timestamp_ns_ = frame.header.timestamp_ns;
-      if (spot != nullptr && hybrid_a_star_.Plan(frame, frame.ego.pose, spot->target_pose,
-                                                 &replanned, &replan_error)) {
-        parking_maneuver_ = std::move(replanned);
-        parking_segment_index_ = 0;
-        mode_ = Mode::kOpenSpaceParking;
-        return PlanParking(frame);
+      if (ReplanParking(frame, &replan_error)) {
+        continue;
       }
+      return MakeFallbackResponse(frame, "post-plan parking collision validation failed",
+                                  "OPEN_SPACE_PARKING");
     }
-    return MakeFallbackResponse(frame, "post-plan parking collision validation failed",
-                                "OPEN_SPACE_PARKING");
+
+    // 规划成功时，返回response
+    response.status = PlanningStatus::kOk;
+    response.message = "open-space parking trajectory generated";
+    response.diagnostics = {
+        "planning_mode=OPEN_SPACE_PARKING", std::string("gear=") + ToString(segment.direction),
+        "parking_segment_index=" + std::to_string(parking_segment_index_), "speed=ST_DP"};
+    return response;
   }
-  // 规划成功时，返回response
-  response.status = PlanningStatus::kOk;
-  response.message = "open-space parking trajectory generated";
-  response.diagnostics = {
-      "planning_mode=OPEN_SPACE_PARKING", std::string("gear=") + ToString(segment.direction),
-      "parking_segment_index=" + std::to_string(parking_segment_index_), "speed=ST_DP"};
-  return response;
 }
 
 // 整个规划的入口函数
