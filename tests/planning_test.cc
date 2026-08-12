@@ -11,7 +11,7 @@
 #include "speed/speed_planner.h"
 
 #include "collision_test_cases.h"
-
+#include "common/logger.h"
 namespace {
 void Check(bool condition, const char* message) {
   if (!condition) { std::cerr << "FAILED: " << message << '\n'; std::exit(1); }
@@ -709,6 +709,7 @@ void TestParkingCuspRequiresStopAndDwell() {
 }  // 匿名命名空间
 
 int main() {
+  logInfo("avp_planning_test starting");
   TestOrientedRectangleCollision();
   TestGlobalRouteUsesLaneProjections();
   TestSameLaneEntryBehindEgoIsUnreachable();
@@ -752,5 +753,5 @@ int main() {
         "blocked route should fall back");
   Check(HasDiagnostic(blocked_response, "jerk_constraint=emergency_exempt"),
         "emergency fallback should diagnose its jerk-constraint exemption");
-  std::cout << "avp_planning_test passed\n";
+  logInfo("avp_planning_test passed.");
 }

@@ -8,7 +8,7 @@ option(AVP_BUILD_TESTS "构建规划器测试" ON)
 option(AVP_BUILD_VISUALIZERS "构建规划器可视化调试工具" OFF)
 option(AVP_ENABLE_SANITIZERS "启用地址与未定义行为消毒器" OFF)
 option(AVP_ENABLE_CLANG_TIDY "安装 clang-tidy 时运行静态检查" ON)
-
+find_package(spdlog REQUIRED)
 add_library(avp_planning
   src/common/types.h
   src/interfaces/adapters.cc
