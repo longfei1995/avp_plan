@@ -45,10 +45,11 @@ cmake --build --preset visualize --target collision_visualizer
 
 ### Qt 闭环仿真器
 
-`avp_qt_simulator` 是一个可选的 Qt 5 Widgets 2D 场景编辑与闭环仿真工具。它在工具内
+`avp_qt_simulator` 是一个可选的 Qt 5 Widgets 2D 地图查看与闭环仿真工具。它在工具内
 模拟定位、纯跟踪控制和运动学自行车运动；每 0.2 秒滚动调用 `Planner::Plan()`，不需要接入
-真实定位或控制模块。画布可编辑车道中心线、自车起点、车位目标和障碍物关键帧，显示全局
-路线、路径—速度耦合结果、Hybrid A* 段、预测障碍物和最终轨迹。
+真实定位或控制模块。程序启动后先显示空画布，使用工具栏的 `Load map` 加载版本化场景
+JSON 后才可运行。车道和车位是只读地图元素；自车起点、目标车位及动态障碍物关键帧仍可
+在右侧 `Scenario` 页调整。
 
 当前开发环境需要 Qt 5.15 的 Core 和 Widgets 开发包，例如 Debian/Ubuntu：
 
@@ -60,7 +61,14 @@ cmake --build build/qt --target avp_qt_simulator --parallel
 ```
 
 场景使用版本化 JSON 保存。障碍物关键帧会在每个规划周期扩展为完整规划时域的预测，循环
-轨迹会重复，非循环轨迹在最后一帧保持，以匹配规划器的零阶保持预测语义。
+轨迹会重复，非循环轨迹在最后一帧保持，以匹配规划器的零阶保持预测语义。可直接加载
+`tools/scenarios/drive_and_park_dynamic.json` 查看包含横穿行人、相邻通道车辆、道路行驶和
+开放空间泊车的示例。
+
+右侧 `Plots` 页显示当前规划的 S-L、S-T、S-曲率和解包后的 S-yaw 曲线，以及最近 60 秒
+实际自车速度、加速度、yaw 和档位历史。开放空间泊车没有车道 Frenet 参考线，因此泊车时
+S-L 图会显示不适用提示，其余三张规划图继续使用当前泊车轨迹更新。图表由 Qt Widgets
+直接绘制，不增加 Qt Charts 或 Matplot++ 依赖。
 
 ## 从哪里开始读
 

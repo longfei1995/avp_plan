@@ -1,6 +1,7 @@
 #ifndef AVP_TOOLS_SIMULATION_RUNTIME_H_
 #define AVP_TOOLS_SIMULATION_RUNTIME_H_
 
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -8,6 +9,16 @@
 #include "tools/scenario.h"
 
 namespace avp::tools {
+
+struct EgoHistorySample {
+  double time_s = 0.0;
+  EgoState ego;
+};
+
+inline constexpr double kEgoHistoryWindowS = 60.0;
+
+void AppendEgoHistorySample(std::deque<EgoHistorySample>* history,
+                            const EgoHistorySample& sample);
 
 class SimulationRuntime {
  public:
@@ -26,6 +37,7 @@ class SimulationRuntime {
   const PlanningDebugData& debug() const { return debug_; }
   double last_planning_time_ms() const { return last_planning_time_ms_; }
   const std::string& stop_reason() const { return stop_reason_; }
+  const std::deque<EgoHistorySample>& ego_history() const { return ego_history_; }
 
  private:
   void PlanNow();
@@ -46,6 +58,7 @@ class SimulationRuntime {
   double last_planning_time_ms_ = 0.0;
   bool running_ = false;
   std::string stop_reason_;
+  std::deque<EgoHistorySample> ego_history_;
 };
 
 }  // namespace avp::tools

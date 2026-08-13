@@ -1,0 +1,82 @@
+{
+    "schema_version": 1,
+    "initial_ego": {
+        "pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+        "speed_mps": 0.0,
+        "acceleration_mps2": 0.0,
+        "direction": 1
+    },
+    "target_parking_spot_id": "P_forward",
+    "lanes": [
+        {
+            "id": "entry_aisle",
+            "centerline": [[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]],
+            "successor_ids": ["parking_approach"],
+            "closed": false
+        },
+        {
+            "id": "parking_approach",
+            "centerline": [[4.0, 0.0], [5.0, 0.0], [6.0, 0.0]],
+            "successor_ids": [],
+            "closed": false
+        }
+    ],
+    "parking_spots": [
+        {
+            "id": "P_forward",
+            "entry_pose": {"x": 6.0, "y": 0.0, "yaw": 0.0},
+            "target_pose": {"x": 12.0, "y": 0.0, "yaw": 0.0}
+        }
+    ],
+    "obstacles": [
+        {
+            "id": "crossing_pedestrian",
+            "length_m": 0.6,
+            "width_m": 0.6,
+            "confidence": 1.0,
+            "loop": false,
+            "keyframes": [
+                {"time_s": 0.0, "pose": {"x": 6.0, "y": -4.0, "yaw": 1.5707963268}, "speed_mps": 4.0},
+                {"time_s": 2.0, "pose": {"x": 6.0, "y": 4.0, "yaw": 1.5707963268}, "speed_mps": 4.0},
+                {"time_s": 3.0, "pose": {"x": 6.0, "y": 5.0, "yaw": 1.5707963268}, "speed_mps": 0.0}
+            ]
+        },
+        {
+            "id": "adjacent_delivery_cart",
+            "length_m": 3.0,
+            "width_m": 1.4,
+            "confidence": 1.0,
+            "loop": false,
+            "keyframes": [
+                {"time_s": 0.0, "pose": {"x": 1.0, "y": 6.0, "yaw": 0.0}, "speed_mps": 1.0},
+                {"time_s": 6.0, "pose": {"x": 5.0, "y": 6.0, "yaw": 0.0}, "speed_mps": 1.0},
+                {"time_s": 12.0, "pose": {"x": 10.0, "y": 6.0, "yaw": 0.0}, "speed_mps": 0.0}
+            ]
+        }
+    ],
+    "vehicle": {
+        "length_m": 4.8,
+        "width_m": 2.0,
+        "wheelbase_m": 2.8,
+        "max_speed_mps": 3.0,
+        "max_acceleration_mps2": 1.5,
+        "max_deceleration_mps2": 2.0,
+        "max_curvature_1pm": 0.25,
+        "safety_margin_m": 0.35,
+        "min_jerk_mps3": -4.0,
+        "max_jerk_mps3": 2.0
+    },
+    "planner": {
+        "horizon_s": 8.0,
+        "time_step_s": 0.2,
+        "path_step_m": 0.5,
+        "input_max_age_s": 0.5,
+        "path_coupling_iterations": 2,
+        "max_lane_match_distance_m": 2.0,
+        "max_lane_heading_difference_rad": 1.0471975512,
+        "jerk_weight": 1.0,
+        "max_reverse_speed_mps": 1.0,
+        "gear_shift_stop_speed_mps": 0.05,
+        "gear_shift_dwell_s": 1.0
+    }
+}

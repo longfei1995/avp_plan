@@ -18,7 +18,44 @@ const TimedTrajectoryPoint* ReferenceAt(const PlanningResponse& response, double
   }
   return result;
 }
+
+TimedTrajectoryPoint InterpolatedReferenceAt(const PlanningResponse& response,
+                                             double relative_time_s) {
+  if (response.trajectory.empty()) return {};
+  if (relative_time_s <= response.trajectory.front().relative_time_s) {
+    return response.trajectory.front();
+  }
+  for (size_t index = 1; index < response.trajectory.size(); ++index) {
+    const TimedTrajectoryPoint& next = response.trajectory[index];
+    if (relative_time_s > next.relative_time_s) continue;
+    const TimedTrajectoryPoint& previous = response.trajectory[index - 1];
+    const double duration = next.relative_time_s - previous.relative_time_s;
+    const double ratio =
+        duration <= 1e-9 ? 1.0 : (relative_time_s - previous.relative_time_s) / duration;
+    TimedTrajectoryPoint result = previous;
+    result.pose.position = Interpolate(previous.pose.position, next.pose.position, ratio);
+    result.pose.yaw = NormalizeAngle(
+        previous.pose.yaw + ratio * NormalizeAngle(next.pose.yaw - previous.pose.yaw));
+    result.speed_mps = previous.speed_mps + ratio * (next.speed_mps - previous.speed_mps);
+    result.acceleration_mps2 = previous.acceleration_mps2 +
+                               ratio * (next.acceleration_mps2 - previous.acceleration_mps2);
+    result.relative_time_s = relative_time_s;
+    result.direction = ratio < 1.0 ? previous.direction : next.direction;
+    return result;
+  }
+  return response.trajectory.back();
+}
 }  // namespace
+
+void AppendEgoHistorySample(std::deque<EgoHistorySample>* history,
+                            const EgoHistorySample& sample) {
+  if (history == nullptr) return;
+  history->push_back(sample);
+  const double oldest_time = sample.time_s - kEgoHistoryWindowS;
+  while (history->size() > 1 && history->front().time_s < oldest_time) {
+    history->pop_front();
+  }
+}
 
 SimulationRuntime::SimulationRuntime(SimulationScenario scenario) { Reset(std::move(scenario)); }
 
@@ -37,6 +74,8 @@ void SimulationRuntime::Reset(SimulationScenario scenario) {
   last_planning_time_ms_ = 0.0;
   running_ = false;
   stop_reason_.clear();
+  ego_history_.clear();
+  AppendEgoHistorySample(&ego_history_, {simulation_time_s_, ego_});
 }
 
 void SimulationRuntime::PlanNow() {
@@ -57,14 +96,15 @@ void SimulationRuntime::PlanNow() {
 void SimulationRuntime::Replan() { PlanNow(); }
 
 void SimulationRuntime::ApplyController(double step_s) {
-  const TimedTrajectoryPoint* reference =
-      ReferenceAt(response_, std::max(0.0, simulation_time_s_ - trajectory_start_time_s_));
-  if (reference == nullptr) return;
-  const DrivingDirection requested_direction = reference->direction;
+  if (response_.trajectory.empty()) return;
+  const TimedTrajectoryPoint reference = InterpolatedReferenceAt(
+      response_, std::max(0.0, simulation_time_s_ - trajectory_start_time_s_));
+  const DrivingDirection requested_direction = reference.direction;
   if (requested_direction != ego_.direction) {
     const double deceleration = scenario_.vehicle.max_deceleration_mps2;
     ego_.speed_mps = std::max(0.0, ego_.speed_mps - deceleration * step_s);
-    ego_.acceleration_mps2 = -deceleration;
+    ego_.acceleration_mps2 =
+        ego_.speed_mps <= scenario_.planner.gear_shift_stop_speed_mps ? 0.0 : -deceleration;
     if (std::abs(ego_.speed_mps) <= scenario_.planner.gear_shift_stop_speed_mps) {
       if (pending_gear_ != requested_direction) {
         pending_gear_ = requested_direction;
@@ -72,13 +112,14 @@ void SimulationRuntime::ApplyController(double step_s) {
       }
       if (simulation_time_s_ - gear_request_start_time_s_ >= scenario_.planner.gear_shift_dwell_s) {
         ego_.direction = requested_direction;
+        ego_.acceleration_mps2 = 0.0;
         pending_gear_ = DrivingDirection::kUnknown;
       }
     }
     return;
   }
   pending_gear_ = DrivingDirection::kUnknown;
-  const double target_speed = std::max(0.0, reference->speed_mps);
+  const double target_speed = std::max(0.0, reference.speed_mps);
   const double speed_error = target_speed - ego_.speed_mps;
   const double desired_acceleration = std::clamp(speed_error / step_s,
                                                  -scenario_.vehicle.max_deceleration_mps2,
@@ -123,6 +164,7 @@ void SimulationRuntime::Step() {
   if (!running_ && !stop_reason_.empty()) return;
   ApplyController(kSimulationStepS);
   simulation_time_s_ += kSimulationStepS;
+  AppendEgoHistorySample(&ego_history_, {simulation_time_s_, ego_});
   if (HasCollision()) {
     running_ = false;
     stop_reason_ = "simulation collision";
