@@ -63,6 +63,7 @@ void SimulationRuntime::Reset(SimulationScenario scenario) {
   stop_reason_.clear();
   ego_history_.clear();
   AppendEgoHistorySample(&ego_history_, {simulation_time_s_, ego_});
+  PlanNow();
 }
 
 void SimulationRuntime::PlanNow() {
@@ -74,13 +75,12 @@ void SimulationRuntime::PlanNow() {
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
   trajectory_start_time_s_ = simulation_time_s_;
   next_plan_time_s_ = simulation_time_s_ + kPlanningPeriodS;
-  if (response_.status != PlanningStatus::kOk) {
-    running_ = false;
-    stop_reason_ = std::string("planner: ") + ToString(response_.status) + ": " + response_.message;
+  if (response_.status == PlanningStatus::kOk) {
+    if (stop_reason_.rfind("planner: ", 0) == 0) stop_reason_.clear();
+    return;
   }
+  stop_reason_ = std::string("planner: ") + ToString(response_.status) + ": " + response_.message;
 }
-
-void SimulationRuntime::Replan() { PlanNow(); }
 
 void SimulationRuntime::FollowTrajectory(double step_s) {
   if (response_.trajectory.empty()) return;
@@ -103,15 +103,15 @@ bool SimulationRuntime::HasCollision() const {
   return false;
 }
 
-void SimulationRuntime::Step() {
-  if (simulation_time_s_ + 1e-9 >= next_plan_time_s_ || response_.trajectory.empty()) PlanNow();
-  if (!running_ && !stop_reason_.empty()) return;
+void SimulationRuntime::Tick() {
+  if (simulation_time_s_ + 1e-9 >= next_plan_time_s_) PlanNow();
   FollowTrajectory(kSimulationStepS);
   simulation_time_s_ += kSimulationStepS;
   AppendEgoHistorySample(&ego_history_, {simulation_time_s_, ego_});
   if (HasCollision()) {
-    running_ = false;
     stop_reason_ = "simulation collision";
+  } else if (stop_reason_ == "simulation collision") {
+    stop_reason_.clear();
   }
 }
 

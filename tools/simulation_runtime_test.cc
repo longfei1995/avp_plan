@@ -88,11 +88,10 @@ void TestRuntimePlansAndLimitsSpeed() {
   avp::tools::SimulationRuntime runtime(avp::tools::MakeDefaultScenario());
   Check(runtime.ego_history().size() == 1 && runtime.ego_history().front().time_s == 0.0,
         "runtime reset must create the initial ego history sample");
-  runtime.Replan();
   Check(!runtime.response().trajectory.empty(), "runtime must request a trajectory");
   const avp::Vec2 initial_position = runtime.ego().pose.position;
   runtime.SetRunning(true);
-  for (int index = 0; index < 50; ++index) runtime.Step();
+  for (int index = 0; index < 50; ++index) runtime.Tick();
   Check(runtime.ego().speed_mps <= runtime.scenario().vehicle.max_speed_mps + 1e-9,
         "runtime must respect maximum vehicle speed");
   Check(std::hypot(runtime.ego().pose.position.x - initial_position.x,
@@ -106,11 +105,19 @@ void TestRuntimePlansAndLimitsSpeed() {
   runtime.Reset(avp::tools::MakeDefaultScenario());
   Check(runtime.ego_history().size() == 1 && runtime.ego_history().front().time_s == 0.0,
         "runtime reset must clear prior ego history");
+  CheckNear(runtime.simulation_time_s(), 0.0, "runtime reset must restore initial simulation time");
+  CheckNear(runtime.ego().pose.position.x, initial_position.x,
+            "runtime reset must restore the initial ego x position");
+  CheckNear(runtime.ego().pose.position.y, initial_position.y,
+            "runtime reset must restore the initial ego y position");
+  Check(!runtime.running(), "runtime reset must restore the initially paused state");
+  Check(runtime.response().status == avp::PlanningStatus::kOk &&
+            runtime.response().header.sequence_id == 1,
+        "runtime reset must recreate the initial planning response and planner sequence");
 }
 
 void TestPerfectTrajectoryTrackingAndRollingReplan() {
   avp::tools::SimulationRuntime runtime(avp::tools::MakeDefaultScenario());
-  runtime.Replan();
   Check(runtime.response().status == avp::PlanningStatus::kOk &&
             runtime.response().trajectory.size() >= 2,
         "perfect tracking test requires a valid timed trajectory");
@@ -118,20 +125,20 @@ void TestPerfectTrajectoryTrackingAndRollingReplan() {
   const avp::TimedTrajectoryPoint first_expected =
       SampleExpectedTrajectory(runtime.response(), 0.02);
 
-  runtime.Step();
+  runtime.Tick();
   CheckNear(runtime.simulation_time_s(), 0.02,
             "one simulation step must advance exactly twenty milliseconds");
   CheckEgoMatches(runtime.ego(), first_expected,
                   "perfect tracking must use the trajectory state at the next simulation time");
 
-  for (int index = 1; index < 10; ++index) runtime.Step();
+  for (int index = 1; index < 10; ++index) runtime.Tick();
   CheckNear(runtime.simulation_time_s(), 0.2,
             "ten simulation steps must reach one planning period");
   Check(runtime.response().header.sequence_id == first_sequence_id,
         "replanning must not occur before the next step starts at the planning boundary");
   const avp::EgoState replan_anchor = runtime.ego();
 
-  runtime.Step();
+  runtime.Tick();
   Check(runtime.response().header.sequence_id == first_sequence_id + 1,
         "the first step at the planning boundary must trigger one rolling replan");
   CheckNear(runtime.response().trajectory.front().pose.position.x, replan_anchor.pose.position.x,
@@ -152,16 +159,15 @@ void TestPerfectTrackingPreservesGearShiftDwell() {
   const double gear_shift_dwell_s = scenario.planner.gear_shift_dwell_s;
   avp::tools::SimulationRuntime runtime(std::move(scenario));
 
-  runtime.Replan();
   Check(runtime.response().status == avp::PlanningStatus::kOk &&
             runtime.response().message == "waiting for safe gear shift",
         "reverse parking must begin with a stationary gear-shift trajectory");
   const avp::Pose2d shift_pose = runtime.ego().pose;
-  runtime.Step();
+  runtime.Tick();
   Check(runtime.ego().direction == avp::DrivingDirection::kReverse,
         "perfect tracking must apply the requested trajectory direction directly");
 
-  for (int index = 1; index < 50; ++index) runtime.Step();
+  for (int index = 1; index < 50; ++index) runtime.Tick();
   CheckNear(runtime.simulation_time_s(), gear_shift_dwell_s,
             "gear-shift regression must reach the configured dwell boundary");
   Check(runtime.response().message == "waiting for safe gear shift",
@@ -172,10 +178,62 @@ void TestPerfectTrackingPreservesGearShiftDwell() {
             "ego y position must remain stationary during gear-shift dwell");
   CheckNear(runtime.ego().speed_mps, 0.0, "ego speed must remain zero during gear-shift dwell");
 
-  runtime.Step();
+  runtime.Tick();
   Check(runtime.response().status == avp::PlanningStatus::kOk &&
             runtime.response().message == "open-space parking trajectory generated",
         "parking motion may start once dwell time and direction feedback are satisfied");
+}
+
+void TestSafeFallbackNeverPausesSimulation() {
+  avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
+  scenario.obstacles = {
+      {"wall", 1.0, 6.0, 1.0, false, {{0.0, {{5.0, 0.0}, 0.0}, 0.0}}}};
+  avp::tools::SimulationRuntime runtime(std::move(scenario));
+
+  Check(runtime.response().status == avp::PlanningStatus::kNoSafeTrajectory,
+        "wall must block every S-L lattice path and produce a safe-stop fallback");
+  Check(!runtime.stop_reason().empty(), "planning fallback must remain visible as a warning");
+
+  runtime.SetRunning(true);
+  for (int index = 0; index < 20; ++index) runtime.Tick();
+  CheckNear(runtime.simulation_time_s(), 0.4,
+            "safe fallback must keep advancing time through repeated planning failures");
+  Check(runtime.running(), "safe fallback must never change the user-selected Run state");
+  Check(runtime.response().header.sequence_id == 2,
+        "fallback execution must retain the five-hertz rolling replan cadence");
+}
+
+void TestFatalPlanningFailureNeverPausesSimulation() {
+  avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
+  scenario.target_parking_spot_id = "missing";
+  avp::tools::SimulationRuntime runtime(std::move(scenario));
+  runtime.SetRunning(true);
+
+  Check(runtime.response().status != avp::PlanningStatus::kOk &&
+            runtime.response().status != avp::PlanningStatus::kNoSafeTrajectory,
+        "missing target must produce a fatal planning status");
+  Check(runtime.running() && !runtime.stop_reason().empty(),
+        "fatal planning failure must report a warning without changing the Run state");
+  runtime.Tick();
+  CheckNear(runtime.simulation_time_s(), 0.02,
+            "fatal planning failure with no trajectory must still advance simulation time");
+  Check(runtime.response().header.sequence_id == 1,
+        "an empty failed response must not increase replanning beyond five hertz");
+}
+
+void TestCollisionNeverPausesSimulation() {
+  avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
+  scenario.obstacles = {
+      {"overlap", 1.0, 1.0, 1.0, false, {{0.0, scenario.initial_ego.pose, 0.0}}}};
+  avp::tools::SimulationRuntime runtime(std::move(scenario));
+  runtime.SetRunning(true);
+
+  runtime.Tick();
+  Check(runtime.running(), "simulation collision must not change the user-selected Run state");
+  CheckNear(runtime.simulation_time_s(), 0.02,
+            "simulation collision must still advance simulation time");
+  Check(runtime.stop_reason() == "simulation collision",
+        "simulation collision must remain visible as a warning");
 }
 
 void TestEgoHistoryWindow() {
@@ -233,12 +291,11 @@ void TestDriveAndParkScenarioLoads() {
             !scenario.obstacles.empty(),
         "dynamic drive-and-park scenario must contain a route, parking spot, and obstacles");
   avp::tools::SimulationRuntime runtime(std::move(scenario));
-  runtime.Replan();
   Check(runtime.response().status == avp::PlanningStatus::kOk &&
             !runtime.response().trajectory.empty(),
         "dynamic drive-and-park scenario must have a valid initial plan");
   runtime.SetRunning(true);
-  for (int index = 0; index < 11; ++index) runtime.Step();
+  for (int index = 0; index < 11; ++index) runtime.Tick();
   Check(runtime.simulation_time_s() > 0.2 &&
             runtime.response().status == avp::PlanningStatus::kOk &&
             runtime.stop_reason().empty(),
@@ -252,6 +309,9 @@ int main() {
   TestRuntimePlansAndLimitsSpeed();
   TestPerfectTrajectoryTrackingAndRollingReplan();
   TestPerfectTrackingPreservesGearShiftDwell();
+  TestSafeFallbackNeverPausesSimulation();
+  TestFatalPlanningFailureNeverPausesSimulation();
+  TestCollisionNeverPausesSimulation();
   TestEgoHistoryWindow();
   TestPlanningPlotData();
   TestDriveAndParkScenarioLoads();

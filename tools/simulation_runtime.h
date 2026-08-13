@@ -27,8 +27,7 @@ class SimulationRuntime {
   void Reset(SimulationScenario scenario);
   void SetRunning(bool running) { running_ = running; }
   bool running() const { return running_; }
-  void Step();
-  void Replan();
+  void Tick();
 
   const SimulationScenario& scenario() const { return scenario_; }
   const EgoState& ego() const { return ego_; }

@@ -374,7 +374,7 @@ class MainWindow final : public QMainWindow {
     CreateUi();
     connect(&timer_, &QTimer::timeout, this, [this] {
       if (runtime_ != nullptr && runtime_->running()) {
-        runtime_->Step();
+        runtime_->Tick();
         Refresh();
       }
     });
@@ -396,18 +396,13 @@ class MainWindow final : public QMainWindow {
   void CreateUi() {
     QToolBar* toolbar = addToolBar("Simulation");
     run_action_ = toolbar->addAction("Run");
-    run_action_->setCheckable(true);
-    connect(run_action_, &QAction::toggled, this, [this](bool running) {
-      if (runtime_ != nullptr) runtime_->SetRunning(running);
-    });
-    step_action_ = toolbar->addAction("Step");
-    connect(step_action_, &QAction::triggered, this, [this] {
-      if (runtime_ != nullptr) runtime_->Step();
+    connect(run_action_, &QAction::triggered, this, [this] {
+      if (runtime_ != nullptr) runtime_->SetRunning(true);
       Refresh();
     });
-    replan_action_ = toolbar->addAction("Replan");
-    connect(replan_action_, &QAction::triggered, this, [this] {
-      if (runtime_ != nullptr) runtime_->Replan();
+    stop_action_ = toolbar->addAction("Stop");
+    connect(stop_action_, &QAction::triggered, this, [this] {
+      if (runtime_ != nullptr) runtime_->SetRunning(false);
       Refresh();
     });
     reset_action_ = toolbar->addAction("Reset");
@@ -554,8 +549,7 @@ class MainWindow final : public QMainWindow {
 
   void SetLoadedState(bool loaded) {
     run_action_->setEnabled(loaded);
-    step_action_->setEnabled(loaded);
-    replan_action_->setEnabled(loaded);
+    stop_action_->setEnabled(loaded);
     reset_action_->setEnabled(loaded);
     save_action_->setEnabled(loaded);
     delete_obstacle_action_->setEnabled(loaded);
@@ -566,7 +560,7 @@ class MainWindow final : public QMainWindow {
     if (runtime_ == nullptr) return;
     SimulationScenario scenario = runtime_->scenario();
     scenario.initial_ego.pose = {{ego_x_->value(), ego_y_->value()}, ego_yaw_->value()};
-    ResetAndReplan(std::move(scenario));
+    ResetRuntime(std::move(scenario));
     QTimer::singleShot(0, this, [this] { canvas_->FitContents(); });
   }
 
@@ -574,7 +568,7 @@ class MainWindow final : public QMainWindow {
     if (runtime_ == nullptr || target_->currentIndex() < 0) return;
     SimulationScenario scenario = runtime_->scenario();
     scenario.target_parking_spot_id = target_->currentData().toString().toStdString();
-    ResetAndReplan(std::move(scenario));
+    ResetRuntime(std::move(scenario));
   }
 
   void AddObstacle() {
@@ -583,7 +577,7 @@ class MainWindow final : public QMainWindow {
     const int index = static_cast<int>(scenario.obstacles.size() + 1);
     scenario.obstacles.push_back({"obstacle_" + std::to_string(index), 0.6, 0.6, 1.0,
                                   false, {{0.0, {{4.0, 2.0}, 0.0}, 0.0}}});
-    ResetAndReplan(std::move(scenario));
+    ResetRuntime(std::move(scenario));
   }
 
   void AddKeyframe() {
@@ -594,7 +588,7 @@ class MainWindow final : public QMainWindow {
     auto& keyframes = scenario.obstacles[static_cast<size_t>(index)].keyframes;
     const ObstacleKeyframe previous = keyframes.empty() ? ObstacleKeyframe{} : keyframes.back();
     keyframes.push_back({previous.time_s + 1.0, previous.pose, previous.speed_mps});
-    ResetAndReplan(std::move(scenario));
+    ResetRuntime(std::move(scenario));
   }
 
   void DeleteSelectedObstacle() {
@@ -608,18 +602,18 @@ class MainWindow final : public QMainWindow {
     SimulationScenario scenario = runtime_->scenario();
     if (index < 0 || index >= static_cast<int>(scenario.obstacles.size())) return;
     scenario.obstacles.erase(scenario.obstacles.begin() + index);
-    ResetAndReplan(std::move(scenario));
+    ResetRuntime(std::move(scenario));
   }
 
-  void ResetAndReplan(SimulationScenario scenario) {
+  void ResetRuntime(SimulationScenario scenario) {
     runtime_->Reset(std::move(scenario));
-    runtime_->Replan();
     Refresh();
   }
 
   void ResetScenario() {
     if (runtime_ == nullptr) return;
-    ResetAndReplan(runtime_->scenario());
+    runtime_->Reset(loaded_scenario_);
+    Refresh();
   }
 
   void ApplyObstacleProperties() {
@@ -631,7 +625,7 @@ class MainWindow final : public QMainWindow {
     obstacle.length_m = obstacle_length_->value();
     obstacle.width_m = obstacle_width_->value();
     obstacle.loop = obstacle_loop_->isChecked();
-    ResetAndReplan(std::move(scenario));
+    ResetRuntime(std::move(scenario));
   }
 
   void ApplyKeyframeTable() {
@@ -656,7 +650,7 @@ class MainWindow final : public QMainWindow {
               [](const ObstacleKeyframe& left, const ObstacleKeyframe& right) {
                 return left.time_s < right.time_s;
               });
-    ResetAndReplan(std::move(scenario));
+    ResetRuntime(std::move(scenario));
   }
 
   void RefreshKeyframes() {
@@ -700,9 +694,6 @@ class MainWindow final : public QMainWindow {
       canvas_->Clear();
       diagnostics_->setPlainText("Load a scenario JSON with the Load map action.");
       UpdateEmptyPlots();
-      run_action_->blockSignals(true);
-      run_action_->setChecked(false);
-      run_action_->blockSignals(false);
       return;
     }
 
@@ -736,8 +727,9 @@ class MainWindow final : public QMainWindow {
     obstacles_->blockSignals(false);
     LoadObstacleProperties();
 
-    QString info = QString("t=%1 s\nplan=%2 ms\nstatus=%3\nmode=%4\nmessage=%5\n")
+    QString info = QString("t=%1 s\nsimulation=%2\nplan=%3 ms\nstatus=%4\nmode=%5\nmessage=%6\n")
                        .arg(runtime_->simulation_time_s(), 0, 'f', 2)
+                       .arg(runtime_->running() ? "RUNNING" : "PAUSED")
                        .arg(runtime_->last_planning_time_ms(), 0, 'f', 2)
                        .arg(ToString(runtime_->response().status))
                        .arg(QString::fromStdString(runtime_->debug().planning_mode))
@@ -746,14 +738,11 @@ class MainWindow final : public QMainWindow {
       info += QString::fromStdString(diagnostic) + '\n';
     }
     if (!runtime_->stop_reason().empty()) {
-      info += "STOP: " + QString::fromStdString(runtime_->stop_reason());
+      info += "WARNING: " + QString::fromStdString(runtime_->stop_reason());
     }
     diagnostics_->setPlainText(info);
     canvas_->Render(*runtime_, show_debug_->isChecked(), show_prediction_->isChecked());
     UpdatePlots();
-    run_action_->blockSignals(true);
-    run_action_->setChecked(runtime_->running());
-    run_action_->blockSignals(false);
   }
 
   void UpdateEmptyPlots() {
@@ -815,8 +804,8 @@ class MainWindow final : public QMainWindow {
       QMessageBox::warning(this, "Load failed", QString::fromStdString(error));
       return;
     }
-    runtime_ = std::make_unique<SimulationRuntime>(std::move(scenario));
-    runtime_->Replan();
+    loaded_scenario_ = std::move(scenario);
+    runtime_ = std::make_unique<SimulationRuntime>(loaded_scenario_);
     Refresh();
     QTimer::singleShot(0, this, [this] { canvas_->FitContents(); });
   }
@@ -833,10 +822,10 @@ class MainWindow final : public QMainWindow {
   }
 
   std::unique_ptr<SimulationRuntime> runtime_;
+  SimulationScenario loaded_scenario_;
   QTimer timer_;
   QAction* run_action_ = nullptr;
-  QAction* step_action_ = nullptr;
-  QAction* replan_action_ = nullptr;
+  QAction* stop_action_ = nullptr;
   QAction* reset_action_ = nullptr;
   QAction* save_action_ = nullptr;
   QAction* delete_obstacle_action_ = nullptr;
