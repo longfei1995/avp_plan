@@ -354,6 +354,14 @@ std::string Metric(const char* name, double value) {
   stream << name << '=' << value;
   return stream.str();
 }
+
+void FillDebugResponse(PlanningDebugData* debug, const PlanningResponse& response,
+                       const std::string& mode, const std::string& failure_stage = {}) {
+  if (debug == nullptr) return;
+  debug->planning_mode = mode;
+  debug->failure_stage = failure_stage;
+  debug->response = response;
+}
 }  // namespace
 
 Planner::Planner(VehicleConfig vehicle, PlannerConfig config)
@@ -402,8 +410,13 @@ bool Planner::ReplanParking(const PlanningFrame& frame, std::string* error) {
   return true;
 }
 
-PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
+PlanningResponse Planner::PlanParking(const PlanningFrame& frame, PlanningDebugData* debug) {
+  const auto finish = [debug](const PlanningResponse& response, const std::string& failure_stage = {}) {
+    FillDebugResponse(debug, response, "OPEN_SPACE_PARKING", failure_stage);
+    return response;
+  };
   while (true) {
+    if (debug != nullptr) debug->parking_maneuver = parking_maneuver_;
     // 1. 判断全部泊车段是否执行完毕
     if (parking_segment_index_ >= parking_maneuver_.segments.size()) {
       PlanningResponse response;
@@ -412,7 +425,7 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
       response.message = "parking maneuver completed";
       response.trajectory = MakeStationaryTrajectory(frame, frame.ego.direction);
       response.diagnostics = {"planning_mode=OPEN_SPACE_PARKING", "parking_complete=true"};
-      return response;
+      return finish(response);
     }
 
     // 2. 换挡逻辑
@@ -436,7 +449,7 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
         response.diagnostics = {"planning_mode=GEAR_SHIFT",
                                 std::string("gear=") + ToString(pending_direction_),
                                 "parking_segment_index=" + std::to_string(parking_segment_index_)};
-        return response;
+        return finish(response);
       }
       mode_ = Mode::kOpenSpaceParking;
     }
@@ -467,9 +480,10 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
       if (ReplanParking(frame, &replan_error)) {
         continue;
       }
-      return MakeFallbackResponse(frame,
-                                  replan_error.empty() ? "parking replan failed" : replan_error,
-                                  "OPEN_SPACE_PARKING");
+      return finish(MakeFallbackResponse(frame,
+                                         replan_error.empty() ? "parking replan failed" : replan_error,
+                                         "OPEN_SPACE_PARKING"),
+                    "parking_replan");
     }
 
     // 5. 判断当前泊车段是否结束（点数不够 ||
@@ -492,7 +506,7 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
     std::vector<SpeedPoint> speed;
     std::string error;
     if (!speed_planner_.Plan(frame, path, &speed, &error, {max_speed, false})) {
-      return MakeFallbackResponse(frame, error, "OPEN_SPACE_PARKING");
+      return finish(MakeFallbackResponse(frame, error, "OPEN_SPACE_PARKING"), "speed_planner");
     }
     if (reaches_end && speed.back().s >= path.back().s - 0.1) {
       // 若当前局部路径已覆盖泊车段终点 && 正常速度规划也确实会走到路径末端附近
@@ -513,8 +527,9 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
       if (ReplanParking(frame, &replan_error)) {
         continue;
       }
-      return MakeFallbackResponse(frame, "post-plan parking collision validation failed",
-                                  "OPEN_SPACE_PARKING");
+      return finish(MakeFallbackResponse(frame, "post-plan parking collision validation failed",
+                                         "OPEN_SPACE_PARKING"),
+                    "final_collision_check");
     }
 
     // 规划成功时，返回response
@@ -523,12 +538,15 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame) {
     response.diagnostics = {
         "planning_mode=OPEN_SPACE_PARKING", std::string("gear=") + ToString(segment.direction),
         "parking_segment_index=" + std::to_string(parking_segment_index_), "speed=ST_DP"};
-    return response;
+    return finish(response);
   }
 }
 
 // 整个规划的入口函数
-PlanningResponse Planner::Plan(const PlanningRequest& request) {
+PlanningResponse Planner::Plan(const PlanningRequest& request) { return Plan(request, nullptr); }
+
+PlanningResponse Planner::Plan(const PlanningRequest& request, PlanningDebugData* debug) {
+  if (debug != nullptr) *debug = {};
   // 先保留请求头，便于下游匹配时间戳和请求序列
   PlanningResponse response;
   response.header = request.header;
@@ -538,6 +556,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
   if (!adapter_.Adapt(request, vehicle_, config_, &frame, &error)) {
     response.status = PlanningStatus::kInvalidInput;
     response.message = error;
+    FillDebugResponse(debug, response, "INPUT", "adapter");
     return response;
   }
   // 2. 检查目标车位是否切换
@@ -548,15 +567,17 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
   // 3. 一旦进入泊车流程，不再每周期重新生成全局路线，而是直接执行当前 Hybrid A* 泊车动作
   // 这保证泊车阶段的行为连续，避免因全局路线变化造成状态混乱
   if (mode_ != Mode::kLaneApproach) {
-    return PlanParking(frame);
+    return PlanParking(frame, debug);
   }
   // 4. 生成全局路线
   GlobalRoute route;
   if (!global_planner_.Plan(frame, &route, &error)) {
     response.status = PlanningStatus::kNoRoute;
     response.message = error;
+    FillDebugResponse(debug, response, "LANE_APPROACH", "global_planner");
     return response;
   }
+  if (debug != nullptr) debug->global_route = route;
   // 5. 判断是否进入泊车模式
   if (Distance(frame.ego.pose.position, route.parking_entry.position) <= kParkingEntryToleranceM &&
       std::abs(frame.ego.speed_mps) <= frame.config.gear_shift_stop_speed_mps) {
@@ -567,15 +588,18 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
       // 空的 segments 会让 PlanParking() 返回“parking maneuver completed”的静止轨迹
       parking_segment_index_ = 0;
       parking_maneuver_.segments.clear();
-      return PlanParking(frame);
+      return PlanParking(frame, debug);
     }
     if (!hybrid_a_star_.Plan(frame, frame.ego.pose, route.parking_target, &parking_maneuver_,
                              &error)) {
-      return MakeFallbackResponse(frame, error, "OPEN_SPACE_PARKING");
+      const PlanningResponse fallback = MakeFallbackResponse(frame, error, "OPEN_SPACE_PARKING");
+      FillDebugResponse(debug, fallback, "OPEN_SPACE_PARKING", "hybrid_a_star");
+      return fallback;
     }
+    if (debug != nullptr) debug->parking_maneuver = parking_maneuver_;
     parking_segment_index_ = 0;
     mode_ = Mode::kOpenSpaceParking;
-    return PlanParking(frame);
+    return PlanParking(frame, debug);
   }
   // 6. 从全局路径截取部分路径，进行局部路径规划
   const double local_horizon = LocalPathHorizon(frame);
@@ -588,10 +612,15 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
       response.trajectory = MakeStopTrajectory(frame);
       response.diagnostics = {"planning_mode=LANE_APPROACH", "parking_entry_stop=true",
                               "gear=DRIVE"};
+      FillDebugResponse(debug, response, "LANE_APPROACH");
       return response;
     }
-    return MakeFallbackResponse(frame, "local route has no usable length", "LANE_APPROACH");
+    const PlanningResponse fallback =
+        MakeFallbackResponse(frame, "local route has no usable length", "LANE_APPROACH");
+    FillDebugResponse(debug, fallback, "LANE_APPROACH", "route_crop");
+    return fallback;
   }
+  if (debug != nullptr) debug->cropped_reference_line = cropped.route.reference_line;
   // 7. 路径—速度耦合迭代
   std::vector<double> arrivals;       // 局部路径各离散点的预计到达时刻
   std::vector<PathPoint> path;        // 局部规划器输出的原始路径
@@ -623,6 +652,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
     path = std::move(candidate_path);
     speed_path = std::move(candidate_speed_path);
     speed = std::move(candidate_speed);
+    if (debug != nullptr) debug->coupling_iterations.push_back({path, speed_path, speed});
 
     // 更新到达时间，供路径规划使用
     arrivals.assign(path.size(), frame.config.horizon_s);
@@ -638,14 +668,19 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
   // 8. 输出最终轨迹与安全校验
   if (path.empty() || speed_path.empty() || speed.empty()) {
     // 路径为空，就走紧急停车轨迹
-    return MakeFallbackResponse(
+    const PlanningResponse fallback = MakeFallbackResponse(
         frame, error.empty() ? "no feasible local path or speed profile" : error, "LANE_APPROACH");
+    FillDebugResponse(debug, fallback, "LANE_APPROACH", "path_speed_coupling");
+    return fallback;
   }
 
   response.trajectory = ComposeTrajectory(speed_path, speed, DrivingDirection::kDrive);
   if (!IsCollisionFree(frame, response.trajectory)) {
     // 做独立的后验碰撞检查；失败后返回紧急停车
-    return MakeFallbackResponse(frame, "post-plan collision validation failed", "LANE_APPROACH");
+    const PlanningResponse fallback =
+        MakeFallbackResponse(frame, "post-plan collision validation failed", "LANE_APPROACH");
+    FillDebugResponse(debug, fallback, "LANE_APPROACH", "final_collision_check");
+    return fallback;
   }
 
   response.status = PlanningStatus::kOk;
@@ -658,6 +693,7 @@ PlanningResponse Planner::Plan(const PlanningRequest& request) {
                           Metric("global_route_length_m", cropped.global_length_m),
                           Metric("local_horizon_m", cropped.local_length_m),
                           "path_layer_count=" + std::to_string(path.size())};
+  FillDebugResponse(debug, response, "LANE_APPROACH");
   return response;
 }
 }  // namespace avp

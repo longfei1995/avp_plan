@@ -43,6 +43,25 @@ cmake --build --preset visualize --target collision_visualizer
 若未安装 Matplot++ 或 Gnuplot，只有启用 `AVP_BUILD_VISUALIZERS=ON` 的配置会失败；常规测试构建
 不受影响。
 
+### Qt 闭环仿真器
+
+`avp_qt_simulator` 是一个可选的 Qt 5 Widgets 2D 场景编辑与闭环仿真工具。它在工具内
+模拟定位、纯跟踪控制和运动学自行车运动；每 0.2 秒滚动调用 `Planner::Plan()`，不需要接入
+真实定位或控制模块。画布可编辑车道中心线、自车起点、车位目标和障碍物关键帧，显示全局
+路线、路径—速度耦合结果、Hybrid A* 段、预测障碍物和最终轨迹。
+
+当前开发环境需要 Qt 5.15 的 Core 和 Widgets 开发包，例如 Debian/Ubuntu：
+
+```bash
+sudo apt install qtbase5-dev
+cmake -S . -B build/qt -DAVP_BUILD_VISUALIZERS=ON -DAVP_BUILD_TESTS=ON
+cmake --build build/qt --target avp_qt_simulator --parallel
+./build/qt/tools/avp_qt_simulator
+```
+
+场景使用版本化 JSON 保存。障碍物关键帧会在每个规划周期扩展为完整规划时域的预测，循环
+轨迹会重复，非循环轨迹在最后一帧保持，以匹配规划器的零阶保持预测语义。
+
 ## 从哪里开始读
 
 生产集成时的入口是 [`Planner::Plan`](src/planning/planner.cc)；库本身没有

@@ -706,6 +706,25 @@ void TestParkingCuspRequiresStopAndDwell() {
           "post-cusp output must contain only the new gear");
   }
 }
+
+void TestPlannerDebugData() {
+  avp::Planner planner;
+  avp::PlanningDebugData debug;
+  const avp::PlanningRequest request = MakeRequest();
+  const avp::PlanningResponse response = planner.Plan(request, &debug);
+  Check(response.status == avp::PlanningStatus::kOk, "debug planning request must succeed");
+  Check(debug.response.status == response.status && debug.planning_mode == "LANE_APPROACH",
+        "debug data must mirror lane-approach result");
+  Check(!debug.global_route.reference_line.empty() && !debug.coupling_iterations.empty(),
+        "debug data must expose route and coupling products");
+  avp::PlanningRequest blocked = request;
+  blocked.obstacles.push_back(
+      {"wall", 1.0, 6.0, 1.0, {{{1'000'000'000, {{5.0, 0.0}, 0.0}, 0.0}}}});
+  avp::Planner blocked_planner;
+  const avp::PlanningResponse fallback = blocked_planner.Plan(blocked, &debug);
+  Check(fallback.status == avp::PlanningStatus::kNoSafeTrajectory && !debug.failure_stage.empty(),
+        "debug data must describe fallback failure stage");
+}
 }  // 匿名命名空间
 
 int main() {
@@ -731,6 +750,7 @@ int main() {
   TestParkingGearShiftAndReverseFallback();
   TestParkingDeviationReplanIsBoundedPerFrame();
   TestParkingCuspRequiresStopAndDwell();
+  TestPlannerDebugData();
   avp::Planner planner;
   const avp::PlanningRequest request = MakeRequest();
   const avp::PlanningResponse first = planner.Plan(request);

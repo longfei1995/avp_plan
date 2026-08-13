@@ -8,10 +8,32 @@
 #include "open_space/hybrid_a_star.h"
 #include "speed/speed_planner.h"
 namespace avp {
+
+// A snapshot of planner intermediates for visualizers and offline diagnosis.  It deliberately
+// contains only planning-domain types so production users do not need a UI dependency.
+struct CouplingIterationDebug {
+  std::vector<PathPoint> local_path;
+  std::vector<PathPoint> speed_path;
+  std::vector<SpeedPoint> speed_profile;
+};
+
+struct PlanningDebugData {
+  std::string planning_mode;
+  std::string failure_stage;
+  GlobalRoute global_route;
+  std::vector<Vec2> cropped_reference_line;
+  std::vector<CouplingIterationDebug> coupling_iterations;
+  ParkingManeuver parking_maneuver;
+  PlanningResponse response;
+};
+
 class Planner {
  public:
   explicit Planner(VehicleConfig vehicle = {}, PlannerConfig config = {});
   PlanningResponse Plan(const PlanningRequest& request);
+  // Populates debug with every intermediate available on this planning cycle.  Passing nullptr
+  // has the same behavior and cost profile as the original Plan(request) API.
+  PlanningResponse Plan(const PlanningRequest& request, PlanningDebugData* debug);
 
  private:
   enum class Mode {
@@ -31,7 +53,7 @@ class Planner {
       4. 检测偏离与碰撞；
       5. 失败时重规划或紧急停车。
   */
-  PlanningResponse PlanParking(const PlanningFrame& frame);
+  PlanningResponse PlanParking(const PlanningFrame& frame, PlanningDebugData* debug);
   // 从当前车辆位姿重新生成泊车动作；同一规划帧最多尝试一次
   bool ReplanParking(const PlanningFrame& frame, std::string* error);
   // 当目标车位改变时，清除上一任务遗留的状态，重新开始

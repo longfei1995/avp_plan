@@ -1,0 +1,91 @@
+{
+    "initial_ego": {
+        "acceleration_mps2": 0,
+        "direction": 1,
+        "pose": {
+            "x": 0,
+            "y": 0,
+            "yaw": 0
+        },
+        "speed_mps": 0
+    },
+    "lanes": [
+        {
+            "centerline": [
+                [
+                    0,
+                    0
+                ],
+                [
+                    8,
+                    0
+                ]
+            ],
+            "closed": false,
+            "id": "entry",
+            "successor_ids": [
+                "parking_lane"
+            ]
+        },
+        {
+            "centerline": [
+                [
+                    8,
+                    0
+                ],
+                [
+                    12,
+                    0
+                ]
+            ],
+            "closed": false,
+            "id": "parking_lane",
+            "successor_ids": [
+            ]
+        }
+    ],
+    "obstacles": [
+    ],
+    "parking_spots": [
+        {
+            "entry_pose": {
+                "x": 12,
+                "y": 0,
+                "yaw": 0
+            },
+            "id": "P1",
+            "target_pose": {
+                "x": 13,
+                "y": 0,
+                "yaw": 0
+            }
+        }
+    ],
+    "planner": {
+        "gear_shift_dwell_s": 1,
+        "gear_shift_stop_speed_mps": 0.05,
+        "horizon_s": 8,
+        "input_max_age_s": 0.5,
+        "jerk_weight": 1,
+        "max_lane_heading_difference_rad": 1.0471975511965976,
+        "max_lane_match_distance_m": 2,
+        "max_reverse_speed_mps": 1,
+        "path_coupling_iterations": 2,
+        "path_step_m": 0.5,
+        "time_step_s": 0.2
+    },
+    "schema_version": 1,
+    "target_parking_spot_id": "P1",
+    "vehicle": {
+        "length_m": 4.8,
+        "max_acceleration_mps2": 1.5,
+        "max_curvature_1pm": 0.25,
+        "max_deceleration_mps2": 2,
+        "max_jerk_mps3": 2,
+        "max_speed_mps": 3,
+        "min_jerk_mps3": -4,
+        "safety_margin_m": 0.35,
+        "wheelbase_m": 2.8,
+        "width_m": 2
+    }
+}
