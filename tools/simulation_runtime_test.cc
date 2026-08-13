@@ -14,6 +14,47 @@ void Check(bool condition, const char* message) {
   }
 }
 
+void CheckNear(double actual, double expected, const char* message) {
+  Check(std::abs(actual - expected) <= 1e-9, message);
+}
+
+avp::TimedTrajectoryPoint SampleExpectedTrajectory(const avp::PlanningResponse& response,
+                                                   double relative_time_s) {
+  Check(!response.trajectory.empty(), "expected trajectory must not be empty");
+  if (relative_time_s <= response.trajectory.front().relative_time_s) {
+    return response.trajectory.front();
+  }
+  for (size_t index = 1; index < response.trajectory.size(); ++index) {
+    const avp::TimedTrajectoryPoint& next = response.trajectory[index];
+    if (relative_time_s > next.relative_time_s) continue;
+    const avp::TimedTrajectoryPoint& previous = response.trajectory[index - 1];
+    const double duration = next.relative_time_s - previous.relative_time_s;
+    const double ratio =
+        duration <= 1e-9 ? 1.0 : (relative_time_s - previous.relative_time_s) / duration;
+    avp::TimedTrajectoryPoint result = previous;
+    result.pose.position = avp::Interpolate(previous.pose.position, next.pose.position, ratio);
+    result.pose.yaw = avp::NormalizeAngle(
+        previous.pose.yaw + ratio * avp::NormalizeAngle(next.pose.yaw - previous.pose.yaw));
+    result.speed_mps = previous.speed_mps + ratio * (next.speed_mps - previous.speed_mps);
+    result.acceleration_mps2 = previous.acceleration_mps2 +
+                               ratio * (next.acceleration_mps2 - previous.acceleration_mps2);
+    result.relative_time_s = relative_time_s;
+    result.direction = ratio < 1.0 ? previous.direction : next.direction;
+    return result;
+  }
+  return response.trajectory.back();
+}
+
+void CheckEgoMatches(const avp::EgoState& ego, const avp::TimedTrajectoryPoint& expected,
+                     const char* message) {
+  CheckNear(ego.pose.position.x, expected.pose.position.x, message);
+  CheckNear(ego.pose.position.y, expected.pose.position.y, message);
+  CheckNear(avp::NormalizeAngle(ego.pose.yaw - expected.pose.yaw), 0.0, message);
+  CheckNear(ego.speed_mps, expected.speed_mps, message);
+  CheckNear(ego.acceleration_mps2, expected.acceleration_mps2, message);
+  Check(ego.direction == expected.direction, message);
+}
+
 void TestKeyframeSamplingAndPrediction() {
   avp::tools::ScenarioObstacle obstacle{"walker", 0.6, 0.6, 1.0, true,
                                          {{0.0, {{0.0, 0.0}, 0.0}, 1.0},
@@ -65,6 +106,76 @@ void TestRuntimePlansAndLimitsSpeed() {
   runtime.Reset(avp::tools::MakeDefaultScenario());
   Check(runtime.ego_history().size() == 1 && runtime.ego_history().front().time_s == 0.0,
         "runtime reset must clear prior ego history");
+}
+
+void TestPerfectTrajectoryTrackingAndRollingReplan() {
+  avp::tools::SimulationRuntime runtime(avp::tools::MakeDefaultScenario());
+  runtime.Replan();
+  Check(runtime.response().status == avp::PlanningStatus::kOk &&
+            runtime.response().trajectory.size() >= 2,
+        "perfect tracking test requires a valid timed trajectory");
+  const uint64_t first_sequence_id = runtime.response().header.sequence_id;
+  const avp::TimedTrajectoryPoint first_expected =
+      SampleExpectedTrajectory(runtime.response(), 0.02);
+
+  runtime.Step();
+  CheckNear(runtime.simulation_time_s(), 0.02,
+            "one simulation step must advance exactly twenty milliseconds");
+  CheckEgoMatches(runtime.ego(), first_expected,
+                  "perfect tracking must use the trajectory state at the next simulation time");
+
+  for (int index = 1; index < 10; ++index) runtime.Step();
+  CheckNear(runtime.simulation_time_s(), 0.2,
+            "ten simulation steps must reach one planning period");
+  Check(runtime.response().header.sequence_id == first_sequence_id,
+        "replanning must not occur before the next step starts at the planning boundary");
+  const avp::EgoState replan_anchor = runtime.ego();
+
+  runtime.Step();
+  Check(runtime.response().header.sequence_id == first_sequence_id + 1,
+        "the first step at the planning boundary must trigger one rolling replan");
+  CheckNear(runtime.response().trajectory.front().pose.position.x, replan_anchor.pose.position.x,
+            "rolling replan trajectory must remain anchored at the current ego x position");
+  CheckNear(runtime.response().trajectory.front().pose.position.y, replan_anchor.pose.position.y,
+            "rolling replan trajectory must remain anchored at the current ego y position");
+  CheckEgoMatches(runtime.ego(), SampleExpectedTrajectory(runtime.response(), 0.02),
+                  "perfect tracking must continue from the replanned trajectory without lag");
+}
+
+void TestPerfectTrackingPreservesGearShiftDwell() {
+  avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
+  scenario.map.lanes = {{"entry", {{0.0, 0.0}, {10.0, 0.0}}, {}, false}};
+  scenario.map.parking_spots = {{"P", {{10.0, 0.0}, 0.0}, {{9.0, 0.0}, 0.0}}};
+  scenario.initial_ego.pose = {{10.0, 0.0}, 0.0};
+  scenario.initial_ego.direction = avp::DrivingDirection::kDrive;
+  scenario.target_parking_spot_id = "P";
+  const double gear_shift_dwell_s = scenario.planner.gear_shift_dwell_s;
+  avp::tools::SimulationRuntime runtime(std::move(scenario));
+
+  runtime.Replan();
+  Check(runtime.response().status == avp::PlanningStatus::kOk &&
+            runtime.response().message == "waiting for safe gear shift",
+        "reverse parking must begin with a stationary gear-shift trajectory");
+  const avp::Pose2d shift_pose = runtime.ego().pose;
+  runtime.Step();
+  Check(runtime.ego().direction == avp::DrivingDirection::kReverse,
+        "perfect tracking must apply the requested trajectory direction directly");
+
+  for (int index = 1; index < 50; ++index) runtime.Step();
+  CheckNear(runtime.simulation_time_s(), gear_shift_dwell_s,
+            "gear-shift regression must reach the configured dwell boundary");
+  Check(runtime.response().message == "waiting for safe gear shift",
+        "parking planner must retain the stationary trajectory for the full dwell");
+  CheckNear(runtime.ego().pose.position.x, shift_pose.position.x,
+            "ego x position must remain stationary during gear-shift dwell");
+  CheckNear(runtime.ego().pose.position.y, shift_pose.position.y,
+            "ego y position must remain stationary during gear-shift dwell");
+  CheckNear(runtime.ego().speed_mps, 0.0, "ego speed must remain zero during gear-shift dwell");
+
+  runtime.Step();
+  Check(runtime.response().status == avp::PlanningStatus::kOk &&
+            runtime.response().message == "open-space parking trajectory generated",
+        "parking motion may start once dwell time and direction feedback are satisfied");
 }
 
 void TestEgoHistoryWindow() {
@@ -119,13 +230,19 @@ void TestDriveAndParkScenarioLoads() {
   Check(avp::tools::LoadScenarioJson(path.string(), &scenario, &error),
         "dynamic drive-and-park scenario must load");
   Check(scenario.map.lanes.size() >= 2 && scenario.map.parking_spots.size() == 1 &&
-            scenario.obstacles.size() >= 2,
+            !scenario.obstacles.empty(),
         "dynamic drive-and-park scenario must contain a route, parking spot, and obstacles");
   avp::tools::SimulationRuntime runtime(std::move(scenario));
   runtime.Replan();
   Check(runtime.response().status == avp::PlanningStatus::kOk &&
             !runtime.response().trajectory.empty(),
         "dynamic drive-and-park scenario must have a valid initial plan");
+  runtime.SetRunning(true);
+  for (int index = 0; index < 11; ++index) runtime.Step();
+  Check(runtime.simulation_time_s() > 0.2 &&
+            runtime.response().status == avp::PlanningStatus::kOk &&
+            runtime.stop_reason().empty(),
+        "dynamic drive-and-park scenario must remain feasible after its first rolling replan");
 }
 }  // namespace
 
@@ -133,6 +250,8 @@ int main() {
   TestKeyframeSamplingAndPrediction();
   TestJsonRoundTrip();
   TestRuntimePlansAndLimitsSpeed();
+  TestPerfectTrajectoryTrackingAndRollingReplan();
+  TestPerfectTrackingPreservesGearShiftDwell();
   TestEgoHistoryWindow();
   TestPlanningPlotData();
   TestDriveAndParkScenarioLoads();

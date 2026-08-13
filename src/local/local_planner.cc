@@ -83,14 +83,13 @@ bool IsCollisionFree(const PlanningFrame& frame, const Pose2d& pose, double arri
   return true;
 }
 
-// 防止数组越界
-double ArrivalTimeAt(const PlanningFrame& frame, const std::vector<double>& arrival_times,
-                     size_t index, double fallback_s) {
-  if (!arrival_times.empty()) {
-    return arrival_times[std::min(index, arrival_times.size() - 1)];
+// 首轮路径规划没有速度剖面，所有路径层均使用当前时刻；后续轮次使用上一轮速度规划
+// 回投的到达时刻。索引超出范围时沿用最后一个有效时刻，防止数组越界。
+double ArrivalTimeAt(const std::vector<double>& arrival_times, size_t index) {
+  if (arrival_times.empty()) {
+    return 0.0;
   }
-  const double nominal_speed = std::min(frame.vehicle.max_speed_mps, 1.5);
-  return std::min(frame.config.horizon_s, fallback_s / nominal_speed);
+  return arrival_times[std::min(index, arrival_times.size() - 1)];
 }
 
 // 将一对横向索引映射到格点状态数组下标。
@@ -158,8 +157,7 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   const double infinity = std::numeric_limits<double>::infinity();
   std::vector<double> initial_cost(kLateralCount, infinity);
   const int anchor_lateral = kLateralCount / 2;   // 横向偏移为 0 的中心索引
-  if (IsCollisionFree(frame, frame.ego.pose,
-                      ArrivalTimeAt(frame, arrival_times, 0, reference[0].s))) {
+  if (IsCollisionFree(frame, frame.ego.pose, ArrivalTimeAt(arrival_times, 0))) {
     // 如果自车在当前时刻没有和障碍物碰撞，则第 0 层中心点可达，总代价为 0。
     initial_cost[anchor_lateral] = 0.0;
   }
@@ -190,8 +188,7 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
         continue;
       }
       // 检查自车在预计到达第 1 点的时刻，是否会与障碍物碰撞。
-      if (!IsCollisionFree(frame, pose,
-                           ArrivalTimeAt(frame, arrival_times, 1, reference[1].s))) {
+      if (!IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, 1))) {
         continue;
       }
       // 横向变化率 dl / ds，表征 “沿参考线前进时，横向偏移改变得有多快”
@@ -224,9 +221,7 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
           const Vec2 delta{positions[layer][next].x - positions[layer - 1][current].x,
                            positions[layer][next].y - positions[layer - 1][current].y};
           const Pose2d pose{positions[layer][next], std::atan2(delta.y, delta.x)};
-          if (!IsCollisionFree(
-                  frame, pose,
-                  ArrivalTimeAt(frame, arrival_times, layer, reference[layer].s))) {
+          if (!IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, layer))) {
             // 硬约束：禁止碰撞
             continue;
           }
@@ -333,7 +328,7 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   for (size_t index = 0; index < path->size(); ++index) {
     if (path->at(index).curvature > frame.vehicle.max_curvature_1pm ||
         !IsCollisionFree(frame, {path->at(index).position, path->at(index).yaw},
-                         ArrivalTimeAt(frame, arrival_times, index, reference[index].s))) {
+                         ArrivalTimeAt(arrival_times, index))) {
       *error = "selected S-L lattice path is invalid";
       path->clear();
       return false;

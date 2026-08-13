@@ -246,6 +246,33 @@ void TestSlLattice() {
   Check(detours_around_obstacle, "S-L lattice should choose a lateral detour");
 }
 
+void TestFirstSlCouplingUsesCurrentObstaclePose() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.ego.pose = {{0.0, 0.0}, 0.0};
+  frame.config.horizon_s = 8.0;
+  frame.config.path_step_m = 0.5;
+  frame.obstacles.push_back(
+      {"crossing", 1.0, 1.0, 1.0,
+       {{frame.header.timestamp_ns, {{10.0, -4.0}, avp::kPi / 2.0}, 4.0},
+        {frame.header.timestamp_ns + 7'000'000'000, {{10.0, 0.0}, avp::kPi / 2.0}, 4.0}}});
+  avp::GlobalRoute route;
+  route.reference_line = {{0.0, 0.0}, {15.0, 0.0}};
+  avp::LocalPlanner planner;
+  std::vector<avp::PathPoint> path;
+  std::string error;
+
+  Check(planner.Plan(frame, route, {}, &path, &error),
+        "first S-L coupling must use the obstacle pose at the current time");
+  Check(path.size() == 31, "first S-L coupling should preserve every resampled path layer");
+
+  std::vector<double> future_arrivals(path.size(), 7.0);
+  Check(!planner.Plan(frame, route, future_arrivals, &path, &error),
+        "later S-L couplings must use speed-profile arrival times");
+  Check(error == "no feasible S-L lattice path",
+        "a future obstacle blocking the full lateral lattice must be reported");
+}
+
 void TestAccelerationConstrainedStDp() {
   avp::PlanningFrame frame;
   frame.header = {"map", 1'000'000'000, 1};
@@ -737,6 +764,7 @@ int main() {
   TestPlannerTrajectoryStartsAtEgoPose();
   TestLocalPlannerAnchorsEgoPose();
   TestSlLattice();
+  TestFirstSlCouplingUsesCurrentObstaclePose();
   TestAccelerationConstrainedStDp();
   TestJerkUsesInitialAccelerationAndShortHorizons();
   TestJerkCostPrefersSmootherProfile();

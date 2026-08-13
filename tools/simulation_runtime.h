@@ -41,7 +41,7 @@ class SimulationRuntime {
 
  private:
   void PlanNow();
-  void ApplyController(double step_s);
+  void FollowTrajectory(double step_s);
   bool HasCollision() const;
 
   SimulationScenario scenario_;
@@ -52,8 +52,6 @@ class SimulationRuntime {
   double simulation_time_s_ = 0.0;
   double trajectory_start_time_s_ = 0.0;
   double next_plan_time_s_ = 0.0;
-  double gear_request_start_time_s_ = 0.0;
-  DrivingDirection pending_gear_ = DrivingDirection::kUnknown;
   uint64_t sequence_id_ = 0;
   double last_planning_time_ms_ = 0.0;
   bool running_ = false;
