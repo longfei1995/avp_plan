@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -81,6 +82,8 @@ void TestJsonRoundTrip() {
   Check(avp::tools::LoadScenarioJson(path.string(), &loaded, &error), "scenario JSON must load");
   Check(loaded.map.lanes.size() == scenario.map.lanes.size() && loaded.obstacles.size() == 1,
         "scenario JSON must preserve content");
+  CheckNear(loaded.planner.max_parking_speed_mps, scenario.planner.max_parking_speed_mps,
+            "scenario JSON must preserve the general parking speed limit");
   std::filesystem::remove(path);
 }
 
@@ -147,6 +150,54 @@ void TestPerfectTrajectoryTrackingAndRollingReplan() {
             "rolling replan trajectory must remain anchored at the current ego y position");
   CheckEgoMatches(runtime.ego(), SampleExpectedTrajectory(runtime.response(), 0.02),
                   "perfect tracking must continue from the replanned trajectory without lag");
+}
+
+void TestCruiseAndEndpointLiveness() {
+  avp::tools::SimulationScenario cruise_scenario = avp::tools::MakeDefaultScenario();
+  cruise_scenario.map.lanes = {{"long", {{0.0, 0.0}, {50.0, 0.0}}, {}, false}};
+  cruise_scenario.map.parking_spots = {
+      {"P", {{50.0, 0.0}, 0.0}, {{51.0, 0.0}, 0.0}}};
+  cruise_scenario.target_parking_spot_id = "P";
+  avp::tools::SimulationRuntime cruise_runtime(std::move(cruise_scenario));
+  cruise_runtime.SetRunning(true);
+  while (cruise_runtime.simulation_time_s() < 4.0 - 1e-9) cruise_runtime.Tick();
+  Check(cruise_runtime.response().status == avp::PlanningStatus::kOk &&
+            cruise_runtime.ego().speed_mps >= 2.7 &&
+            cruise_runtime.ego().speed_mps <=
+                cruise_runtime.scenario().vehicle.max_speed_mps + 1e-9,
+        "rolling replanning should reach ninety percent of maximum cruise speed in four seconds");
+
+  avp::tools::SimulationRuntime endpoint_runtime(avp::tools::MakeDefaultScenario());
+  endpoint_runtime.SetRunning(true);
+  double current_creep_s = 0.0;
+  double longest_creep_s = 0.0;
+  bool entered_parking = false;
+  while (endpoint_runtime.simulation_time_s() < 10.0 - 1e-9) {
+    endpoint_runtime.Tick();
+    const bool away_from_entry =
+        avp::Distance(endpoint_runtime.ego().pose.position,
+                      endpoint_runtime.scenario().map.parking_spots.front().entry_pose.position) >
+        0.55;
+    const double speed = endpoint_runtime.ego().speed_mps;
+    if (endpoint_runtime.debug().planning_mode == "LANE_APPROACH" && away_from_entry &&
+        speed > 0.0 && speed < endpoint_runtime.scenario().planner.gear_shift_stop_speed_mps) {
+      current_creep_s += 0.02;
+      longest_creep_s = std::max(longest_creep_s, current_creep_s);
+    } else {
+      current_creep_s = 0.0;
+    }
+    if (endpoint_runtime.debug().planning_mode == "OPEN_SPACE_PARKING") {
+      entered_parking = true;
+      for (const avp::TimedTrajectoryPoint& point : endpoint_runtime.response().trajectory) {
+        Check(point.speed_mps <=
+                  endpoint_runtime.scenario().planner.max_parking_speed_mps + 1e-9,
+              "forward open-space parking must respect the general parking speed limit");
+      }
+    }
+  }
+  Check(entered_parking, "default rolling scenario must leave lane approach within ten seconds");
+  Check(longest_creep_s <= 1.0 + 1e-9,
+        "lane approach must not sustain sub-threshold creep away from the parking entry");
 }
 
 void TestPerfectTrackingPreservesGearShiftDwell() {
@@ -369,6 +420,7 @@ int main() {
   TestJsonRoundTrip();
   TestRuntimePlansAndLimitsSpeed();
   TestPerfectTrajectoryTrackingAndRollingReplan();
+  TestCruiseAndEndpointLiveness();
   TestPerfectTrackingPreservesGearShiftDwell();
   TestSafeFallbackNeverPausesSimulation();
   TestMovingFallbackEndsAtRest();

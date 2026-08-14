@@ -11,6 +11,7 @@ namespace {
 constexpr double kParkingEntryToleranceM = 0.55;
 // 车辆到泊车段投影点的偏差，如果超过这个值，则重规划
 constexpr double kParkingSegmentDeviationM = 1.0;
+constexpr double kTerminalReachToleranceM = 0.02;
 
 // 查询路径在 s 处的x, y
 Vec2 PositionAtS(const std::vector<PathPoint>& path, double s) {
@@ -476,9 +477,10 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame, PlanningDebugD
     }
 
     // 4. 生成当前泊车段局部路径
-    const double max_speed = segment.direction == DrivingDirection::kReverse
-                                 ? frame.config.max_reverse_speed_mps
-                                 : frame.vehicle.max_speed_mps;
+    const double max_speed =
+        segment.direction == DrivingDirection::kReverse
+            ? std::min(frame.config.max_parking_speed_mps, frame.config.max_reverse_speed_mps)
+            : frame.config.max_parking_speed_mps;
     const double max_path_length = MaximumTravelDistance(frame, max_speed);
     double nearest_distance = 0.0;
     bool reaches_end = false;
@@ -518,13 +520,16 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame, PlanningDebugD
     if (!speed_planner_.Plan(frame, path, &speed, &error, {max_speed, false})) {
       return finish(MakeFallbackResponse(frame, error, "OPEN_SPACE_PARKING"), "speed_planner");
     }
-    if (reaches_end && speed.back().s >= path.back().s - 0.1) {
-      // 若当前局部路径已覆盖泊车段终点 && 正常速度规划也确实会走到路径末端附近
-      // 重新规划 => 要求在终点停车
+    const bool endpoint_stop_requested =
+        reaches_end &&
+        MaximumTravelDistance(frame, max_speed) >= path.back().s - kTerminalReachToleranceM;
+    bool endpoint_stop_selected = false;
+    if (endpoint_stop_requested) {
       std::vector<SpeedPoint> stopped_speed;
       std::string stop_error;
       if (speed_planner_.Plan(frame, path, &stopped_speed, &stop_error, {max_speed, true})) {
         speed = std::move(stopped_speed);
+        endpoint_stop_selected = true;
       }
     }
 
@@ -547,7 +552,12 @@ PlanningResponse Planner::PlanParking(const PlanningFrame& frame, PlanningDebugD
     response.message = "open-space parking trajectory generated";
     response.diagnostics = {
         "planning_mode=OPEN_SPACE_PARKING", std::string("gear=") + ToString(segment.direction),
-        "parking_segment_index=" + std::to_string(parking_segment_index_), "speed=ST_DP"};
+        "parking_segment_index=" + std::to_string(parking_segment_index_), "speed=ST_DP",
+        Metric("desired_speed_mps", max_speed),
+        std::string("endpoint_stop_requested=") +
+            (endpoint_stop_requested ? "true" : "false"),
+        std::string("endpoint_stop_selected=") +
+            (endpoint_stop_selected ? "true" : "false")};
     return finish(response);
   }
 }
@@ -636,6 +646,8 @@ PlanningResponse Planner::Plan(const PlanningRequest& request, PlanningDebugData
   std::vector<PathPoint> path;        // 局部规划器输出的原始路径
   std::vector<PathPoint> speed_path;  // 局部规划器输出的加密路径，用于速度规划
   std::vector<SpeedPoint> speed;      // 速度规划器输出的速度曲线
+  bool endpoint_stop_requested = false;
+  bool endpoint_stop_selected = false;
   // note
   // 进行固定次数的s-l s-t耦合迭代
   for (int iteration = 0; iteration < frame.config.path_coupling_iterations; ++iteration) {
@@ -651,17 +663,25 @@ PlanningResponse Planner::Plan(const PlanningRequest& request, PlanningDebugData
                              {frame.vehicle.max_speed_mps, false})) {
       break;
     }
-    if (cropped.reaches_end && candidate_speed.back().s >= candidate_speed_path.back().s - 0.1) {
+    const bool candidate_stop_requested =
+        cropped.reaches_end &&
+        MaximumTravelDistance(frame, frame.vehicle.max_speed_mps) >=
+            candidate_speed_path.back().s - kTerminalReachToleranceM;
+    bool candidate_stop_selected = false;
+    if (candidate_stop_requested) {
       std::vector<SpeedPoint> stopped_speed;
       std::string stop_error;
       if (speed_planner_.Plan(frame, candidate_speed_path, &stopped_speed, &stop_error,
                               {frame.vehicle.max_speed_mps, true})) {
         candidate_speed = std::move(stopped_speed);
+        candidate_stop_selected = true;
       }
     }
     path = std::move(candidate_path);
     speed_path = std::move(candidate_speed_path);
     speed = std::move(candidate_speed);
+    endpoint_stop_requested = candidate_stop_requested;
+    endpoint_stop_selected = candidate_stop_selected;
     if (debug != nullptr) debug->coupling_iterations.push_back({path, speed_path, speed});
 
     // 更新到达时间，供路径规划使用
@@ -700,6 +720,11 @@ PlanningResponse Planner::Plan(const PlanningRequest& request, PlanningDebugData
                           "local=SL_DP",
                           "speed=ST_DP",
                           "gear=DRIVE",
+                          Metric("desired_speed_mps", frame.vehicle.max_speed_mps),
+                          std::string("endpoint_stop_requested=") +
+                              (endpoint_stop_requested ? "true" : "false"),
+                          std::string("endpoint_stop_selected=") +
+                              (endpoint_stop_selected ? "true" : "false"),
                           Metric("global_route_length_m", cropped.global_length_m),
                           Metric("local_horizon_m", cropped.local_length_m),
                           "path_layer_count=" + std::to_string(path.size())};

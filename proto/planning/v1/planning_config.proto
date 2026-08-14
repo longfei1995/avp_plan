@@ -40,6 +40,7 @@ message PlannerConfig {
   double max_reverse_speed_mps = 9;
   double gear_shift_stop_speed_mps = 10;
   double gear_shift_dwell_s = 11;
+  double max_parking_speed_mps = 12; // 开放空间泊车的通用速度上限
 }
 
 // 规划器运行时总配置

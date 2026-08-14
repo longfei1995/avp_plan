@@ -19,6 +19,7 @@ planner {
   max_lane_match_distance_m: 2.0
   max_lane_heading_difference_rad: 1.0471975512
   jerk_weight: 1.0
+  max_parking_speed_mps: 1.0
   max_reverse_speed_mps: 1.0
   gear_shift_stop_speed_mps: 0.05
   gear_shift_dwell_s: 1.0

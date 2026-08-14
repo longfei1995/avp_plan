@@ -34,6 +34,7 @@ bool ValidatePlannerConfig(const PlannerConfig& config, const VehicleConfig& veh
   if (!IsFinite(config.horizon_s) || !IsFinite(config.time_step_s) ||
       !IsFinite(config.path_step_m) || !IsFinite(config.max_lane_match_distance_m) ||
       !IsFinite(config.max_lane_heading_difference_rad) || !IsFinite(config.jerk_weight) ||
+      !IsFinite(config.max_parking_speed_mps) ||
       !IsFinite(config.max_reverse_speed_mps) ||
       !IsFinite(config.gear_shift_stop_speed_mps) || !IsFinite(config.gear_shift_dwell_s) ||
       config.horizon_s < config.time_step_s || config.time_step_s <= 0.0 ||
@@ -41,6 +42,8 @@ bool ValidatePlannerConfig(const PlannerConfig& config, const VehicleConfig& veh
       config.max_lane_match_distance_m <= 0.0 ||
       config.max_lane_heading_difference_rad <= 0.0 ||
       config.max_lane_heading_difference_rad > kPi || config.jerk_weight < 0.0 ||
+      config.max_parking_speed_mps <= 0.0 ||
+      config.max_parking_speed_mps > vehicle.max_speed_mps ||
       config.max_reverse_speed_mps <= 0.0 ||
       config.max_reverse_speed_mps > vehicle.max_speed_mps ||
       config.gear_shift_stop_speed_mps < 0.0 || config.gear_shift_dwell_s < 0.0) {

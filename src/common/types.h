@@ -145,6 +145,7 @@ struct PlannerConfig {
   double max_lane_match_distance_m = 2.0;               // 点离车道中心线多远仍可认为属于该车道，默认 2 m
   double max_lane_heading_difference_rad = kPi / 3.0;   // 自车朝向和车道方向允许的最大差异，默认 π/3
   double jerk_weight = 1.0;
+  double max_parking_speed_mps = 1.0;
   double max_reverse_speed_mps = 1.0;
   double gear_shift_stop_speed_mps = 0.05;
   double gear_shift_dwell_s = 1.0;

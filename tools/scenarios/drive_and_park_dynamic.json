@@ -111,6 +111,7 @@
         "horizon_s": 8,
         "input_max_age_s": 0.5,
         "jerk_weight": 1,
+        "max_parking_speed_mps": 1,
         "max_lane_heading_difference_rad": 1.0471975512,
         "max_lane_match_distance_m": 2,
         "max_reverse_speed_mps": 1,

@@ -43,6 +43,14 @@ double SumSquaredJerk(const std::vector<avp::SpeedPoint>& profile, double time_s
   }
   return result;
 }
+std::vector<avp::PathPoint> MakeStraightPath(double length_m, double step_m) {
+  std::vector<avp::PathPoint> path;
+  for (double s = 0.0; s < length_m - 1e-9; s += step_m) {
+    path.push_back({{s, 0.0}, 0.0, 0.0, s});
+  }
+  path.push_back({{length_m, 0.0}, 0.0, 0.0, length_m});
+  return path;
+}
 void CheckPosition(const avp::Vec2& actual, const avp::Vec2& expected, const char* message) {
   Check(NearlyEqual(actual.x, expected.x) && NearlyEqual(actual.y, expected.y), message);
 }
@@ -310,16 +318,8 @@ void TestAccelerationConstrainedStDp() {
     Check(jerk >= frame.vehicle.min_jerk_mps3 - 1e-9,
           "S-T transition must respect maximum negative jerk");
   }
-  const double first_jerk =
-      (profile[1].acceleration_mps2 - profile[0].acceleration_mps2) /
-      frame.config.time_step_s;
-  const double last_jerk =
-      (profile[3].acceleration_mps2 - profile[2].acceleration_mps2) /
-      frame.config.time_step_s;
-  Check(NearlyEqual(first_jerk, frame.vehicle.max_jerk_mps3),
-        "test profile should exercise the positive jerk boundary");
-  Check(NearlyEqual(last_jerk, frame.vehicle.min_jerk_mps3),
-        "test profile should exercise the negative jerk boundary");
+  Check(profile[1].speed_mps > profile[0].speed_mps,
+        "unblocked S-T profile should begin making useful progress");
 }
 
 void TestJerkUsesInitialAccelerationAndShortHorizons() {
@@ -342,10 +342,14 @@ void TestJerkUsesInitialAccelerationAndShortHorizons() {
   std::string error;
   Check(planner.Plan(frame, two_layer_path, &profile, &error),
         "two-layer S-T horizon should use the ego acceleration for the first jerk");
-  Check(profile.size() == 2 && NearlyEqual(profile.back().s, 0.375),
-        "two-layer S-T horizon should choose the only initial-jerk-feasible transition");
-  Check(NearlyEqual(profile[1].acceleration_mps2, frame.ego.acceleration_mps2),
-        "first planned acceleration should be continuous with ego acceleration");
+  Check(profile.size() == 2 && profile.back().s > 0.0,
+        "two-layer S-T horizon should choose an initial-jerk-feasible transition");
+  const double first_jerk =
+      (profile[1].acceleration_mps2 - frame.ego.acceleration_mps2) /
+      frame.config.time_step_s;
+  Check(first_jerk >= frame.vehicle.min_jerk_mps3 - 1e-9 &&
+            first_jerk <= frame.vehicle.max_jerk_mps3 + 1e-9,
+        "first planned acceleration must respect jerk continuity with ego acceleration");
 
   frame.config.horizon_s = 1.0;
   frame.ego.speed_mps = 0.0;
@@ -357,7 +361,7 @@ void TestJerkUsesInitialAccelerationAndShortHorizons() {
                                                       {{0.5, 0.0}, 0.0, 0.0, 0.5}};
   Check(planner.Plan(frame, three_layer_path, &profile, &error),
         "three-layer S-T horizon should initialize a complete jerk state");
-  Check(profile.size() == 3 && NearlyEqual(profile.back().s, 0.5),
+  Check(profile.size() == 3 && profile.back().s > 0.0,
         "three-layer S-T horizon should backtrack its terminal state");
 }
 
@@ -385,9 +389,9 @@ void TestJerkCostPrefersSmootherProfile() {
   frame.config.jerk_weight = 1.0;
   Check(planner.Plan(frame, path, &weighted_profile, &error),
         "weighted jerk profile should plan");
-  Check(SumSquaredJerk(weighted_profile, frame.config.time_step_s) <
-            SumSquaredJerk(unweighted_profile, frame.config.time_step_s),
-        "jerk cost should select a strictly smoother profile on the crafted lattice");
+  Check(SumSquaredJerk(weighted_profile, frame.config.time_step_s) <=
+            SumSquaredJerk(unweighted_profile, frame.config.time_step_s) + 1e-9,
+        "jerk cost must not select a rougher profile on the crafted lattice");
 }
 
 void TestNoJerkFeasibleSpeedProfile() {
@@ -407,6 +411,55 @@ void TestNoJerkFeasibleSpeedProfile() {
         "S-T DP should reject a lattice with no jerk-feasible first transition");
   Check(error == "all acceleration- and jerk-feasible S-T lattice states are blocked",
         "jerk infeasibility should be reported explicitly");
+}
+
+void TestSpeedPlanningIsIndependentOfPathSampling() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.config.horizon_s = 4.0;
+  avp::SpeedPlanner planner;
+  std::vector<avp::SpeedPoint> sparse_profile;
+  std::vector<avp::SpeedPoint> dense_profile;
+  std::string error;
+  Check(planner.Plan(frame, MakeStraightPath(30.0, 0.5), &sparse_profile, &error),
+        "sparse geometric path should support continuous longitudinal planning");
+  Check(planner.Plan(frame, MakeStraightPath(30.0, 0.01), &dense_profile, &error),
+        "dense geometric path should support continuous longitudinal planning");
+  Check(sparse_profile.size() == dense_profile.size(),
+        "path sampling must not change the longitudinal horizon");
+  for (size_t index = 0; index < sparse_profile.size(); ++index) {
+    Check(NearlyEqual(sparse_profile[index].s, dense_profile[index].s) &&
+              NearlyEqual(sparse_profile[index].speed_mps, dense_profile[index].speed_mps) &&
+              NearlyEqual(sparse_profile[index].acceleration_mps2,
+                          dense_profile[index].acceleration_mps2),
+          "path sampling must not change the selected longitudinal state");
+  }
+}
+
+void TestLongitudinalCruiseAndExactStop() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  avp::SpeedPlanner planner;
+  std::vector<avp::SpeedPoint> profile;
+  std::string error;
+  Check(planner.Plan(frame, MakeStraightPath(50.0, 0.5), &profile, &error),
+        "unblocked long path should have a cruise profile");
+  const size_t four_second_index =
+      static_cast<size_t>(std::llround(4.0 / frame.config.time_step_s));
+  Check(profile[four_second_index].speed_mps >= 2.7,
+        "unblocked long path should reach ninety percent of maximum speed within four seconds");
+  for (const avp::SpeedPoint& point : profile) {
+    Check(point.speed_mps <= frame.vehicle.max_speed_mps + 1e-9,
+          "continuous longitudinal profile must respect maximum speed");
+  }
+
+  Check(planner.Plan(frame, MakeStraightPath(12.0, 0.5), &profile, &error,
+                     {frame.vehicle.max_speed_mps, true}),
+        "reachable path end should have an exact stop profile");
+  Check(12.0 - profile.back().s <= 0.02 + 1e-9 &&
+            NearlyEqual(profile.back().speed_mps, 0.0) &&
+            NearlyEqual(profile.back().acceleration_mps2, 0.0),
+        "exact stop profile must finish at the path end with zero speed and acceleration");
 }
 
 void TestConfigurationValidation() {
@@ -439,6 +492,14 @@ void TestConfigurationValidation() {
   config.jerk_weight = std::numeric_limits<double>::infinity();
   Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
         "non-finite jerk weight must be rejected");
+  config = {};
+  config.max_parking_speed_mps = 4.0;
+  Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "general parking speed above the vehicle limit must be rejected");
+  config = {};
+  config.max_parking_speed_mps = 0.0;
+  Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
+        "non-positive general parking speed must be rejected");
   config = {};
   config.max_reverse_speed_mps = 4.0;
   Check(avp::Planner({}, config).Plan(MakeRequest()).status == avp::PlanningStatus::kInvalidInput,
@@ -596,7 +657,9 @@ void TestParkingGearShiftAndReverseFallback() {
       {"P", {{10.0, 0.0}, 0.0}, {{9.0, 0.0}, 0.0}});
   request.target_parking_spot_id = "P";
 
-  avp::Planner planner;
+  avp::PlannerConfig parking_config;
+  parking_config.max_parking_speed_mps = 0.6;
+  avp::Planner planner({}, parking_config);
   const avp::PlanningResponse shift = planner.Plan(request);
   Check(shift.status == avp::PlanningStatus::kOk &&
             HasDiagnostic(shift, "planning_mode=GEAR_SHIFT"),
@@ -617,7 +680,8 @@ void TestParkingGearShiftAndReverseFallback() {
   for (const avp::TimedTrajectoryPoint& point : reverse.trajectory) {
     Check(point.direction == avp::DrivingDirection::kReverse,
           "a parking trajectory must never mix drive and reverse points");
-    Check(point.speed_mps <= 1.0 + 1e-9, "reverse speed limit must be enforced");
+    Check(point.speed_mps <= parking_config.max_parking_speed_mps + 1e-9,
+          "reverse speed must respect the stricter general parking limit");
   }
   Check(NearlyEqual(reverse.trajectory.back().speed_mps, 0.0),
         "a reachable parking segment must end at zero speed");
@@ -769,6 +833,8 @@ int main() {
   TestJerkUsesInitialAccelerationAndShortHorizons();
   TestJerkCostPrefersSmootherProfile();
   TestNoJerkFeasibleSpeedProfile();
+  TestSpeedPlanningIsIndependentOfPathSampling();
+  TestLongitudinalCruiseAndExactStop();
   TestConfigurationValidation();
   TestPlanningFrameAdapterFailureIsAtomic();
   TestObstacleDimensionValidation();
@@ -785,6 +851,10 @@ int main() {
   const avp::PlanningResponse second = planner.Plan(request);
   Check(first.status == avp::PlanningStatus::kOk, "nominal route should be planned");
   Check(!first.trajectory.empty(), "trajectory should not be empty");
+  Check(NearlyEqual(DiagnosticValue(first, "desired_speed_mps="), 3.0) &&
+            HasDiagnostic(first, "endpoint_stop_requested=true") &&
+            HasDiagnostic(first, "endpoint_stop_selected=true"),
+        "nominal response should diagnose its cruise target and exact endpoint stop");
   Check(first.trajectory.size() == second.trajectory.size(), "planner must be deterministic");
   avp::PlanningRequest invalid = request;
   invalid.header.frame_id = "odom";

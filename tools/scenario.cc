@@ -72,7 +72,9 @@ QJsonObject PlannerToJson(const PlannerConfig& config) {
           {"path_coupling_iterations", config.path_coupling_iterations},
           {"max_lane_match_distance_m", config.max_lane_match_distance_m},
           {"max_lane_heading_difference_rad", config.max_lane_heading_difference_rad},
-          {"jerk_weight", config.jerk_weight}, {"max_reverse_speed_mps", config.max_reverse_speed_mps},
+          {"jerk_weight", config.jerk_weight},
+          {"max_parking_speed_mps", config.max_parking_speed_mps},
+          {"max_reverse_speed_mps", config.max_reverse_speed_mps},
           {"gear_shift_stop_speed_mps", config.gear_shift_stop_speed_mps},
           {"gear_shift_dwell_s", config.gear_shift_dwell_s}};
 }
@@ -90,6 +92,8 @@ void PlannerFromJson(const QJsonObject& object, PlannerConfig* config) {
   config->max_lane_heading_difference_rad = object["max_lane_heading_difference_rad"].toDouble(
       config->max_lane_heading_difference_rad);
   config->jerk_weight = object["jerk_weight"].toDouble(config->jerk_weight);
+  config->max_parking_speed_mps =
+      object["max_parking_speed_mps"].toDouble(config->max_parking_speed_mps);
   config->max_reverse_speed_mps =
       object["max_reverse_speed_mps"].toDouble(config->max_reverse_speed_mps);
   config->gear_shift_stop_speed_mps =
