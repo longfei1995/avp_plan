@@ -16,7 +16,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-`CMakePresets.json` 还提供 `sanitize` 预设。代码按 Google C++ Style 编写，`.clang-format` 与 `.clang-tidy` 已纳入仓库。
+代码按 Google C++ Style 编写，`.clang-format` 与 `.clang-tidy` 已纳入仓库。
 
 ### 碰撞几何可视化
 

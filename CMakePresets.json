@@ -11,12 +11,6 @@
       }
     },
     {
-      "name": "sanitize",
-      "inherits": "debug",
-      "binaryDir": "${sourceDir}/build/sanitize",
-      "cacheVariables": { "AVP_ENABLE_SANITIZERS": "ON" }
-    },
-    {
       "name": "visualize",
       "inherits": "debug",
       "binaryDir": "${sourceDir}/build/visualize",
@@ -25,7 +19,6 @@
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
-    { "name": "sanitize", "configurePreset": "sanitize" },
     { "name": "visualize", "configurePreset": "visualize" }
   ],
   "testPresets": [

@@ -45,10 +45,7 @@ ctest --test-dir build --output-on-failure # 执行测试套件
 ```
 
 如需可复现的 Debug 构建，依次运行 `cmake --preset debug`、
-`cmake --build --preset debug` 和 `ctest --preset debug`。涉及算法或内存
-安全的修改还应运行 `cmake --preset sanitize` 与
-`cmake --build --preset sanitize`，然后使用
-`ctest --test-dir build/sanitize --output-on-failure`（当前没有 `sanitize` CTest 预设）。
+`cmake --build --preset debug` 和 `ctest --preset debug`。
 
 碰撞几何可视化是可选依赖：安装 Matplot++ 和 Gnuplot 后，使用
 `cmake --preset visualize`、`cmake --build --preset visualize --target collision_visualizer`

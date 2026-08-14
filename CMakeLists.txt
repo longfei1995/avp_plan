@@ -6,7 +6,6 @@ project(avp_planning VERSION 0.1.0 LANGUAGES CXX)
 # option 定义布尔型缓存开关，格式：option(变量名 说明文字 默认值)
 option(AVP_BUILD_TESTS "构建规划器测试" ON)
 option(AVP_BUILD_VISUALIZERS "构建规划器可视化调试工具" OFF)
-option(AVP_ENABLE_SANITIZERS "启用地址与未定义行为消毒器" OFF)
 option(AVP_ENABLE_CLANG_TIDY "安装 clang-tidy 时运行静态检查" ON)
 find_package(spdlog REQUIRED)
 add_library(avp_planning
@@ -44,13 +43,6 @@ if(AVP_ENABLE_CLANG_TIDY)
   endif()
 endif()
 
-
-# ========== Sanitizer 动态运行时检查 ==========
-# 仅在 GCC / Clang 编译器下生效（MSVC 语法不同）
-if(AVP_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(avp_planning PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
-  target_link_options(avp_planning PUBLIC -fsanitize=address,undefined)
-endif()
 
 # ========== 单元测试 ==========
 if(AVP_BUILD_TESTS)

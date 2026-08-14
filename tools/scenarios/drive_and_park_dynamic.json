@@ -88,6 +88,24 @@
             "length_m": 1,
             "loop": false,
             "width_m": 1
+        },
+        {
+            "confidence": 1,
+            "id": "obstacle_2",
+            "keyframes": [
+                {
+                    "pose": {
+                        "x": 10,
+                        "y": 2,
+                        "yaw": 0
+                    },
+                    "speed_mps": 0,
+                    "time_s": 0
+                }
+            ],
+            "length_m": 1,
+            "loop": false,
+            "width_m": 1
         }
     ],
     "parking_spots": [
@@ -111,9 +129,9 @@
         "horizon_s": 8,
         "input_max_age_s": 0.5,
         "jerk_weight": 1,
-        "max_parking_speed_mps": 1,
         "max_lane_heading_difference_rad": 1.0471975512,
         "max_lane_match_distance_m": 2,
+        "max_parking_speed_mps": 1,
         "max_reverse_speed_mps": 1,
         "path_coupling_iterations": 2,
         "path_step_m": 0.1,
