@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "tools/plot_data.h"
+#include "tools/scene_rendering.h"
 #include "tools/simulation_runtime.h"
 
 namespace {
@@ -327,6 +328,35 @@ void TestCollisionNeverPausesSimulation() {
         "simulation collision must remain visible as a warning");
 }
 
+void TestSceneRenderingMatchesCollisionGeometry() {
+  avp::VehicleConfig vehicle;
+  vehicle.length_m = 4.8;
+  vehicle.width_m = 2.0;
+  vehicle.safety_margin_m = 0.35;
+  const avp::Pose2d pose{{3.0, -1.0}, 0.0};
+
+  const QPolygonF body =
+      avp::tools::OrientedBoxPolygon(pose, vehicle.length_m, vehicle.width_m);
+  const QPolygonF safety = avp::tools::VehicleSafetyPolygon(pose, vehicle);
+  CheckNear(body.boundingRect().width(), vehicle.length_m,
+            "rendered vehicle body must preserve configured length");
+  CheckNear(body.boundingRect().height(), vehicle.width_m,
+            "rendered vehicle body must preserve configured width");
+  CheckNear(safety.boundingRect().width(),
+            vehicle.length_m + 2.0 * vehicle.safety_margin_m,
+            "rendered safety envelope must expand both longitudinal sides");
+  CheckNear(safety.boundingRect().height(),
+            vehicle.width_m + 2.0 * vehicle.safety_margin_m,
+            "rendered safety envelope must expand both lateral sides");
+
+  const QPen body_pen = avp::tools::ThinCosmeticPen(Qt::blue);
+  const QPen safety_pen = avp::tools::ThinCosmeticPen(Qt::blue, Qt::DashLine);
+  Check(body_pen.isCosmetic() && std::abs(body_pen.widthF() - 1.0) < 1e-9,
+        "vehicle and obstacle outlines must remain one pixel wide while zooming");
+  Check(safety_pen.isCosmetic() && safety_pen.style() == Qt::DashLine,
+        "safety envelope must use a cosmetic dashed outline");
+}
+
 void TestEgoHistoryWindow() {
   std::deque<avp::tools::EgoHistorySample> history;
   avp::tools::AppendEgoHistorySample(&history, {0.0, {}});
@@ -426,6 +456,7 @@ int main() {
   TestMovingFallbackEndsAtRest();
   TestFatalPlanningFailureNeverPausesSimulation();
   TestCollisionNeverPausesSimulation();
+  TestSceneRenderingMatchesCollisionGeometry();
   TestEgoHistoryWindow();
   TestPlanningPlotData();
   TestDriveAndParkScenarioLoads();

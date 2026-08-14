@@ -4,6 +4,8 @@ add_executable(avp_qt_simulator
   plot_data.cc
   plot_data.h
   qt_simulator_main.cc
+  scene_rendering.cc
+  scene_rendering.h
   scenario.cc
   scenario.h
   simulation_runtime.cc
@@ -18,6 +20,8 @@ if(AVP_BUILD_TESTS)
   add_executable(avp_simulation_runtime_test
     plot_data.cc
     plot_data.h
+    scene_rendering.cc
+    scene_rendering.h
     simulation_runtime_test.cc
     scenario.cc
     scenario.h
@@ -25,7 +29,7 @@ if(AVP_BUILD_TESTS)
     simulation_runtime.h
   )
   target_include_directories(avp_simulation_runtime_test PRIVATE ${PROJECT_SOURCE_DIR})
-  target_link_libraries(avp_simulation_runtime_test PRIVATE avp::planning Qt5::Core)
+  target_link_libraries(avp_simulation_runtime_test PRIVATE avp::planning Qt5::Core Qt5::Gui)
   target_compile_definitions(avp_simulation_runtime_test
     PRIVATE AVP_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
   target_compile_options(avp_simulation_runtime_test PRIVATE -Wall -Wextra -Wpedantic -Werror)

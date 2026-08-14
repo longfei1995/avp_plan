@@ -36,26 +36,13 @@
 #include <QWidget>
 
 #include "tools/plot_data.h"
+#include "tools/scene_rendering.h"
 #include "tools/simulation_runtime.h"
 
 namespace avp::tools {
 namespace {
 
 QPointF Point(const Vec2& point) { return {point.x, -point.y}; }
-
-QPolygonF VehiclePolygon(const Pose2d& pose, double length, double width) {
-  const Vec2 heading = HeadingAxis(pose.yaw);
-  const Vec2 lateral = LateralAxis(pose.yaw);
-  QPolygonF polygon;
-  for (const std::pair<double, double>& corner :
-       {std::pair{0.5, 0.5}, {0.5, -0.5}, {-0.5, -0.5}, {-0.5, 0.5}}) {
-    polygon << Point({pose.position.x + corner.first * length * heading.x +
-                          corner.second * width * lateral.x,
-                      pose.position.y + corner.first * length * heading.y +
-                          corner.second * width * lateral.y});
-  }
-  return polygon;
-}
 
 class Canvas final : public QGraphicsView {
   Q_OBJECT
@@ -125,8 +112,9 @@ class Canvas final : public QGraphicsView {
                         Point(spot.entry_pose.position).y() - 0.25, 0.5, 0.5,
                         QPen(Qt::darkMagenta), QBrush(Qt::magenta));
       scene_.addPolygon(
-          VehiclePolygon(spot.target_pose, scenario.vehicle.length_m, scenario.vehicle.width_m),
-          QPen(Qt::darkGreen), QBrush(Qt::NoBrush));
+          OrientedBoxPolygon(spot.target_pose, scenario.vehicle.length_m,
+                             scenario.vehicle.width_m),
+          ThinCosmeticPen(Qt::darkGreen), QBrush(Qt::NoBrush));
       AddLabel(QString::fromStdString(spot.id), spot.target_pose.position);
     }
 
@@ -180,7 +168,8 @@ class Canvas final : public QGraphicsView {
       const Pose2d pose = SampleObstaclePose(obstacle, runtime.simulation_time_s());
       include_point(pose.position);
       QGraphicsPolygonItem* item = scene_.addPolygon(
-          VehiclePolygon(pose, obstacle.length_m, obstacle.width_m), QPen(Qt::red),
+          OrientedBoxPolygon(pose, obstacle.length_m, obstacle.width_m),
+          ThinCosmeticPen(Qt::red),
           QBrush(QColor("#ffccc7")));
       MakeObstacleSelectable(item, static_cast<int>(obstacle_index));
       QGraphicsSimpleTextItem* label = AddLabel(QString::fromStdString(obstacle.id), pose.position);
@@ -198,9 +187,14 @@ class Canvas final : public QGraphicsView {
       }
     }
 
-    scene_.addPolygon(
-        VehiclePolygon(runtime.ego().pose, scenario.vehicle.length_m, scenario.vehicle.width_m),
-        QPen(Qt::blue), QBrush(QColor("#91d5ff")));
+    if (scenario.vehicle.safety_margin_m > 0.0) {
+      scene_.addPolygon(VehicleSafetyPolygon(runtime.ego().pose, scenario.vehicle),
+                        ThinCosmeticPen(QColor("#0050b3"), Qt::DashLine),
+                        QBrush(Qt::NoBrush));
+    }
+    scene_.addPolygon(OrientedBoxPolygon(runtime.ego().pose, scenario.vehicle.length_m,
+                                         scenario.vehicle.width_m),
+                      ThinCosmeticPen(Qt::blue), QBrush(QColor("#91d5ff")));
     include_point(runtime.ego().pose.position);
     if (has_bounds) {
       const double padding =
