@@ -193,6 +193,11 @@ void TestSafeFallbackNeverPausesSimulation() {
   Check(runtime.response().status == avp::PlanningStatus::kNoSafeTrajectory,
         "wall must block every S-L lattice path and produce a safe-stop fallback");
   Check(!runtime.stop_reason().empty(), "planning fallback must remain visible as a warning");
+  for (const avp::TimedTrajectoryPoint& point : runtime.response().trajectory) {
+    CheckNear(point.speed_mps, 0.0, "stationary fallback must keep zero speed");
+    CheckNear(point.acceleration_mps2, 0.0,
+              "stationary fallback must not retain emergency deceleration");
+  }
 
   runtime.SetRunning(true);
   for (int index = 0; index < 20; ++index) runtime.Tick();
@@ -201,6 +206,41 @@ void TestSafeFallbackNeverPausesSimulation() {
   Check(runtime.running(), "safe fallback must never change the user-selected Run state");
   Check(runtime.response().header.sequence_id == 2,
         "fallback execution must retain the five-hertz rolling replan cadence");
+}
+
+void TestMovingFallbackEndsAtRest() {
+  avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
+  scenario.initial_ego.speed_mps = 1.0;
+  scenario.obstacles = {
+      {"wall", 1.0, 6.0, 1.0, false, {{0.0, {{5.0, 0.0}, 0.0}, 0.0}}}};
+  avp::tools::SimulationRuntime runtime(scenario);
+
+  Check(runtime.response().status == avp::PlanningStatus::kNoSafeTrajectory,
+        "moving blocked ego must receive a safe-stop fallback");
+  const std::vector<avp::TimedTrajectoryPoint>& trajectory = runtime.response().trajectory;
+  Check(trajectory.size() >= 2, "moving fallback must contain a stopping endpoint");
+  CheckNear(trajectory.back().speed_mps, 0.0, "moving fallback must end at zero speed");
+  CheckNear(trajectory.back().acceleration_mps2, 0.0,
+            "moving fallback must clear acceleration once stopped");
+
+  const double braking_distance =
+      scenario.initial_ego.speed_mps * scenario.initial_ego.speed_mps /
+      (2.0 * scenario.vehicle.max_deceleration_mps2);
+  double previous_distance = 0.0;
+  double previous_speed = trajectory.front().speed_mps;
+  for (const avp::TimedTrajectoryPoint& point : trajectory) {
+    const double distance = point.pose.position.x - scenario.initial_ego.pose.position.x;
+    Check(distance + 1e-9 >= previous_distance,
+          "moving fallback distance must be monotonic");
+    Check(distance <= braking_distance + 1e-9,
+          "moving fallback must not pass its physical braking endpoint");
+    Check(point.speed_mps <= previous_speed + 1e-9,
+          "moving fallback speed must be monotonic");
+    previous_distance = distance;
+    previous_speed = point.speed_mps;
+  }
+  CheckNear(previous_distance, braking_distance,
+            "moving fallback must finish at the physical braking endpoint");
 }
 
 void TestFatalPlanningFailureNeverPausesSimulation() {
@@ -300,6 +340,27 @@ void TestDriveAndParkScenarioLoads() {
             runtime.response().status == avp::PlanningStatus::kOk &&
             runtime.stop_reason().empty(),
         "dynamic drive-and-park scenario must remain feasible after its first rolling replan");
+
+  bool observed_temporary_fallback = false;
+  const double position_before_crossing = runtime.ego().pose.position.x;
+  while (runtime.simulation_time_s() < 2.2) {
+    runtime.Tick();
+    if (runtime.response().status == avp::PlanningStatus::kNoSafeTrajectory) {
+      observed_temporary_fallback = true;
+    }
+  }
+  Check(observed_temporary_fallback,
+        "crossing pedestrian scenario must exercise the temporary safe-stop fallback");
+  Check(runtime.response().status == avp::PlanningStatus::kOk && runtime.stop_reason().empty(),
+        "planner must recover after the non-looping pedestrian clears the lane");
+
+  const double recovery_position = runtime.ego().pose.position.x;
+  for (int index = 0; index < 20; ++index) runtime.Tick();
+  Check(runtime.response().status == avp::PlanningStatus::kOk &&
+            runtime.ego().speed_mps > 0.0 &&
+            runtime.ego().pose.position.x > recovery_position + 1e-3 &&
+            runtime.ego().pose.position.x > position_before_crossing + 1e-3,
+        "ego must resume forward motion after the pedestrian clears the lane");
 }
 }  // namespace
 
@@ -310,6 +371,7 @@ int main() {
   TestPerfectTrajectoryTrackingAndRollingReplan();
   TestPerfectTrackingPreservesGearShiftDwell();
   TestSafeFallbackNeverPausesSimulation();
+  TestMovingFallbackEndsAtRest();
   TestFatalPlanningFailureNeverPausesSimulation();
   TestCollisionNeverPausesSimulation();
   TestEgoHistoryWindow();

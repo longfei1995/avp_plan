@@ -235,16 +235,26 @@ std::vector<TimedTrajectoryPoint> MakeStopTrajectory(const PlanningFrame& frame)
   const double direction_sign = direction == DrivingDirection::kReverse ? -1.0 : 1.0;
   const double initial_speed = std::abs(frame.ego.speed_mps);
   const double deceleration = std::max(0.1, frame.vehicle.max_deceleration_mps2);
-  // 至少保留一个规划周期的轨迹点
-  const double stop_time = std::max(frame.config.time_step_s, initial_speed / deceleration);
-  for (double t = 0.0; t <= stop_time + 1e-9; t += frame.config.time_step_s) {
-    const double speed = std::max(0.0, initial_speed - deceleration * t);
-    const double distance = std::max(0.0, initial_speed * t - 0.5 * deceleration * t * t);
+  const double physical_stop_time = initial_speed / deceleration;
+  // 至少保留一个规划周期，并向上取整到规划时间步，保证轨迹包含完全静止的终点。
+  const double trajectory_duration = std::max(frame.config.time_step_s, physical_stop_time);
+  const int step_count =
+      std::max(1, static_cast<int>(std::ceil(trajectory_duration / frame.config.time_step_s)));
+  result.reserve(static_cast<size_t>(step_count) + 1);
+  for (int index = 0; index <= step_count; ++index) {
+    const double t = index * frame.config.time_step_s;
+    // 超过物理停车时刻后固定在制动终点，避免离散时间步造成位置回退。
+    const double motion_time = std::min(t, physical_stop_time);
+    const double speed = std::max(0.0, initial_speed - deceleration * motion_time);
+    const double distance =
+        initial_speed * motion_time - 0.5 * deceleration * motion_time * motion_time;
+    const double acceleration = t + 1e-9 < physical_stop_time ? -deceleration : 0.0;
     // 把沿车体纵向的行驶距离转换到世界坐标
     const Vec2 position{
         frame.ego.pose.position.x + direction_sign * std::cos(frame.ego.pose.yaw) * distance,
         frame.ego.pose.position.y + direction_sign * std::sin(frame.ego.pose.yaw) * distance};
-    result.push_back({{position, frame.ego.pose.yaw}, 0.0, speed, -deceleration, t, direction});
+    result.push_back(
+        {{position, frame.ego.pose.yaw}, 0.0, speed, acceleration, t, direction});
   }
   return result;
 }

@@ -86,7 +86,7 @@
                 }
             ],
             "length_m": 1,
-            "loop": true,
+            "loop": false,
             "width_m": 1
         }
     ],
@@ -115,7 +115,7 @@
         "max_lane_match_distance_m": 2,
         "max_reverse_speed_mps": 1,
         "path_coupling_iterations": 2,
-        "path_step_m": 0.5,
+        "path_step_m": 0.1,
         "time_step_s": 0.2
     },
     "schema_version": 1,
