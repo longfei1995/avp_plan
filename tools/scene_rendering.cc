@@ -2,6 +2,10 @@
 
 #include <utility>
 
+#include <QBrush>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsScene>
+
 namespace avp::tools {
 namespace {
 
@@ -33,6 +37,18 @@ QPen ThinCosmeticPen(const QColor& color, Qt::PenStyle style) {
   QPen pen(color, 1.0, style);
   pen.setCosmetic(true);
   return pen;
+}
+
+QGraphicsEllipseItem* AddParkingEntryMarker(QGraphicsScene* scene, const Vec2& position) {
+  if (scene == nullptr) return nullptr;
+  const double radius_px = 0.5 * kParkingEntryMarkerDiameterPx;
+  QGraphicsEllipseItem* marker =
+      scene->addEllipse(-radius_px, -radius_px, kParkingEntryMarkerDiameterPx,
+                        kParkingEntryMarkerDiameterPx, ThinCosmeticPen(Qt::darkMagenta),
+                        QBrush(Qt::magenta));
+  marker->setPos(ScenePoint(position));
+  marker->setFlag(QGraphicsItem::ItemIgnoresTransformations);
+  return marker;
 }
 
 }  // namespace avp::tools

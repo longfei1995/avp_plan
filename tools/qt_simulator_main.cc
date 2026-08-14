@@ -10,6 +10,7 @@
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
@@ -108,9 +109,7 @@ class Canvas final : public QGraphicsView {
     for (const ParkingSpot& spot : scenario.map.parking_spots) {
       include_point(spot.entry_pose.position);
       include_point(spot.target_pose.position);
-      scene_.addEllipse(Point(spot.entry_pose.position).x() - 0.25,
-                        Point(spot.entry_pose.position).y() - 0.25, 0.5, 0.5,
-                        QPen(Qt::darkMagenta), QBrush(Qt::magenta));
+      AddParkingEntryMarker(&scene_, spot.entry_pose.position);
       scene_.addPolygon(
           OrientedBoxPolygon(spot.target_pose, scenario.vehicle.length_m,
                              scenario.vehicle.width_m),
@@ -239,6 +238,45 @@ class Canvas final : public QGraphicsView {
 
   QGraphicsScene scene_;
   QRectF content_bounds_;
+};
+
+enum class LegendShape { kLine, kBox, kDot };
+
+class LegendSwatch final : public QWidget {
+ public:
+  LegendSwatch(LegendShape shape, QColor stroke, Qt::PenStyle style,
+               QColor fill = Qt::transparent, QWidget* parent = nullptr)
+      : QWidget(parent),
+        shape_(shape),
+        stroke_(std::move(stroke)),
+        style_(style),
+        fill_(std::move(fill)) {
+    setFixedSize(48, 18);
+  }
+
+ protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(stroke_, 2.0, style_));
+    painter.setBrush(fill_);
+    if (shape_ == LegendShape::kLine) {
+      painter.drawLine(QPointF(3.0, height() / 2.0),
+                       QPointF(width() - 3.0, height() / 2.0));
+    } else if (shape_ == LegendShape::kBox) {
+      painter.drawRect(QRectF(4.0, 3.0, width() - 8.0, height() - 6.0));
+    } else {
+      constexpr double kDiameterPx = kParkingEntryMarkerDiameterPx;
+      painter.drawEllipse(QPointF(width() / 2.0, height() / 2.0), kDiameterPx / 2.0,
+                          kDiameterPx / 2.0);
+    }
+  }
+
+ private:
+  LegendShape shape_;
+  QColor stroke_;
+  Qt::PenStyle style_;
+  QColor fill_;
 };
 
 class PlotWidget final : public QWidget {
@@ -511,11 +549,59 @@ class MainWindow final : public QMainWindow {
     QWidget* contents = new QWidget;
     scroll->setWidget(contents);
     QVBoxLayout* layout = new QVBoxLayout(contents);
-    layout->addWidget(new QLabel("Current planning"));
-    sl_plot_ = AddPlot(layout, "S-L path", "s (m)", "l (m)");
-    st_plot_ = AddPlot(layout, "S-T path", "time (s)", "s (m)");
-    curvature_plot_ = AddPlot(layout, "S-curvature", "s (m)", "curvature (1/m)");
-    path_yaw_plot_ = AddPlot(layout, "S-yaw", "s (m)", "yaw (deg)");
+    layout->addWidget(new QLabel("Scene legend"));
+    QWidget* legend = new QWidget;
+    QGridLayout* legend_layout = new QGridLayout(legend);
+    legend_layout->setContentsMargins(0, 0, 0, 0);
+    legend_layout->setHorizontalSpacing(8);
+    legend_layout->setVerticalSpacing(2);
+    int legend_row = 0;
+    AddLegendRow(legend_layout, legend_row++, "Open lane", LegendShape::kLine,
+                 QColor("#576b7a"), Qt::SolidLine);
+    AddLegendRow(legend_layout, legend_row++, "Closed lane", LegendShape::kLine,
+                 Qt::darkGray, Qt::DashLine);
+    AddLegendRow(legend_layout, legend_row++, "Parking entry", LegendShape::kDot,
+                 Qt::darkMagenta, Qt::SolidLine, Qt::magenta);
+    AddLegendRow(legend_layout, legend_row++, "Parking target", LegendShape::kBox,
+                 Qt::darkGreen, Qt::SolidLine);
+    AddLegendRow(legend_layout, legend_row++, "Global route", LegendShape::kLine,
+                 QColor("#fa8c16"), Qt::DashLine);
+    AddLegendRow(legend_layout, legend_row++, "Local S-L path", LegendShape::kLine,
+                 QColor("#13c2c2"), Qt::SolidLine);
+    AddLegendRow(legend_layout, legend_row++, "Parking maneuver", LegendShape::kLine,
+                 QColor("#722ed1"), Qt::DotLine);
+    AddLegendRow(legend_layout, legend_row++, "Response trajectory (OK)", LegendShape::kLine,
+                 QColor("#1890ff"), Qt::SolidLine);
+    AddLegendRow(legend_layout, legend_row++, "Response trajectory (failure)",
+                 LegendShape::kLine, Qt::red, Qt::SolidLine);
+    AddLegendRow(legend_layout, legend_row++, "Ego vehicle", LegendShape::kBox, Qt::blue,
+                 Qt::SolidLine, QColor("#91d5ff"));
+    AddLegendRow(legend_layout, legend_row++, "Ego safety margin", LegendShape::kBox,
+                 QColor("#0050b3"), Qt::DashLine);
+    AddLegendRow(legend_layout, legend_row++, "Obstacle", LegendShape::kBox, Qt::red,
+                 Qt::SolidLine, QColor("#ffccc7"));
+    AddLegendRow(legend_layout, legend_row++, "Obstacle prediction", LegendShape::kLine,
+                 QColor("#ff7875"), Qt::DashLine);
+    legend_layout->setColumnStretch(1, 1);
+    layout->addWidget(legend);
+
+    response_trajectory_label_ = new QLabel("Current response trajectory — 0 points");
+    layout->addWidget(response_trajectory_label_);
+    response_trajectory_table_ = new QTableWidget(0, 9);
+    response_trajectory_table_->setHorizontalHeaderLabels(
+        {"#", "t (s)", "x (m)", "y (m)", "yaw (rad)", "curvature (1/m)", "speed (m/s)",
+         "acceleration (m/s^2)", "gear"});
+    response_trajectory_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    response_trajectory_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    response_trajectory_table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    response_trajectory_table_->setAlternatingRowColors(true);
+    response_trajectory_table_->setWordWrap(false);
+    response_trajectory_table_->verticalHeader()->setVisible(false);
+    response_trajectory_table_->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::ResizeToContents);
+    response_trajectory_table_->setMinimumHeight(280);
+    layout->addWidget(response_trajectory_table_);
+
     layout->addWidget(new QLabel("Actual ego history (last 60 s)"));
     speed_plot_ = AddPlot(layout, "Ego speed", "simulation time (s)", "speed (m/s)");
     acceleration_plot_ =
@@ -531,6 +617,13 @@ class MainWindow final : public QMainWindow {
     PlotWidget* plot = new PlotWidget(title, x_label, y_label);
     layout->addWidget(plot);
     return plot;
+  }
+
+  static void AddLegendRow(QGridLayout* layout, int row, const QString& label,
+                           LegendShape shape, const QColor& stroke, Qt::PenStyle style,
+                           const QColor& fill = Qt::transparent) {
+    layout->addWidget(new LegendSwatch(shape, stroke, style, fill), row, 0);
+    layout->addWidget(new QLabel(label), row, 1);
   }
 
   QDoubleSpinBox* Spin(double minimum, double maximum, double value) {
@@ -601,12 +694,14 @@ class MainWindow final : public QMainWindow {
 
   void ResetRuntime(SimulationScenario scenario) {
     runtime_->Reset(std::move(scenario));
+    response_table_initialized_ = false;
     Refresh();
   }
 
   void ResetScenario() {
     if (runtime_ == nullptr) return;
     runtime_->Reset(loaded_scenario_);
+    response_table_initialized_ = false;
     Refresh();
   }
 
@@ -740,19 +835,16 @@ class MainWindow final : public QMainWindow {
   }
 
   void UpdateEmptyPlots() {
-    for (PlotWidget* plot : {sl_plot_, st_plot_, curvature_plot_, path_yaw_plot_, speed_plot_,
-                             acceleration_plot_, ego_yaw_plot_, gear_plot_}) {
+    response_table_initialized_ = false;
+    response_trajectory_label_->setText("Current response trajectory — 0 points");
+    response_trajectory_table_->setRowCount(0);
+    for (PlotWidget* plot : {speed_plot_, acceleration_plot_, ego_yaw_plot_, gear_plot_}) {
       plot->SetSeries({}, "Load a scenario to display data");
     }
   }
 
   void UpdatePlots() {
-    const PlanningPlotData planning =
-        BuildPlanningPlotData(runtime_->debug(), runtime_->response());
-    sl_plot_->SetSeries(planning.sl_path, QString::fromStdString(planning.sl_empty_message));
-    st_plot_->SetSeries(planning.st_path);
-    curvature_plot_->SetSeries(planning.curvature_by_s);
-    path_yaw_plot_->SetSeries(planning.yaw_by_s);
+    UpdateResponseTrajectoryTable();
 
     std::vector<PlotPoint> speed;
     std::vector<PlotPoint> acceleration;
@@ -788,6 +880,46 @@ class MainWindow final : public QMainWindow {
     gear_plot_->SetSeries(std::move(gear), "No ego history", true);
   }
 
+  void UpdateResponseTrajectoryTable() {
+    const PlanningResponse& response = runtime_->response();
+    if (response_table_initialized_ &&
+        displayed_response_timestamp_ns_ == response.header.timestamp_ns &&
+        displayed_response_sequence_id_ == response.header.sequence_id) {
+      return;
+    }
+    response_table_initialized_ = true;
+    displayed_response_timestamp_ns_ = response.header.timestamp_ns;
+    displayed_response_sequence_id_ = response.header.sequence_id;
+
+    const std::vector<ResponseTrajectoryRow> trajectory_rows =
+        BuildResponseTrajectoryRows(response);
+    response_trajectory_label_->setText(
+        QString("Current response trajectory — %1 points").arg(trajectory_rows.size()));
+    response_trajectory_table_->setUpdatesEnabled(false);
+    response_trajectory_table_->setRowCount(static_cast<int>(trajectory_rows.size()));
+    for (size_t row = 0; row < trajectory_rows.size(); ++row) {
+      const ResponseTrajectoryRow& point = trajectory_rows[row];
+      const QStringList values{
+          QString::number(static_cast<qulonglong>(point.index)),
+          QString::number(point.relative_time_s, 'f', 4),
+          QString::number(point.x_m, 'f', 4),
+          QString::number(point.y_m, 'f', 4),
+          QString::number(point.yaw_rad, 'f', 4),
+          QString::number(point.curvature_1pm, 'f', 4),
+          QString::number(point.speed_mps, 'f', 4),
+          QString::number(point.acceleration_mps2, 'f', 4),
+          QString::fromStdString(point.gear)};
+      for (int column = 0; column < values.size(); ++column) {
+        QTableWidgetItem* item = new QTableWidgetItem(values[column]);
+        item->setTextAlignment(column == values.size() - 1
+                                   ? Qt::AlignCenter
+                                   : Qt::AlignRight | Qt::AlignVCenter);
+        response_trajectory_table_->setItem(static_cast<int>(row), column, item);
+      }
+    }
+    response_trajectory_table_->setUpdatesEnabled(true);
+  }
+
   void OpenScenario() {
     const QString path =
         QFileDialog::getOpenFileName(this, "Load map and scenario", {}, "AVP scenario (*.json)");
@@ -800,6 +932,7 @@ class MainWindow final : public QMainWindow {
     }
     loaded_scenario_ = std::move(scenario);
     runtime_ = std::make_unique<SimulationRuntime>(loaded_scenario_);
+    response_table_initialized_ = false;
     Refresh();
     QTimer::singleShot(0, this, [this] { canvas_->FitContents(); });
   }
@@ -838,10 +971,11 @@ class MainWindow final : public QMainWindow {
   QCheckBox* show_debug_ = nullptr;
   QCheckBox* show_prediction_ = nullptr;
   QPlainTextEdit* diagnostics_ = nullptr;
-  PlotWidget* sl_plot_ = nullptr;
-  PlotWidget* st_plot_ = nullptr;
-  PlotWidget* curvature_plot_ = nullptr;
-  PlotWidget* path_yaw_plot_ = nullptr;
+  bool response_table_initialized_ = false;
+  uint64_t displayed_response_timestamp_ns_ = 0;
+  uint64_t displayed_response_sequence_id_ = 0;
+  QLabel* response_trajectory_label_ = nullptr;
+  QTableWidget* response_trajectory_table_ = nullptr;
   PlotWidget* speed_plot_ = nullptr;
   PlotWidget* acceleration_plot_ = nullptr;
   PlotWidget* ego_yaw_plot_ = nullptr;

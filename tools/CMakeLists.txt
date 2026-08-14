@@ -29,7 +29,7 @@ if(AVP_BUILD_TESTS)
     simulation_runtime.h
   )
   target_include_directories(avp_simulation_runtime_test PRIVATE ${PROJECT_SOURCE_DIR})
-  target_link_libraries(avp_simulation_runtime_test PRIVATE avp::planning Qt5::Core Qt5::Gui)
+  target_link_libraries(avp_simulation_runtime_test PRIVATE avp::planning Qt5::Core Qt5::Widgets)
   target_compile_definitions(avp_simulation_runtime_test
     PRIVATE AVP_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
   target_compile_options(avp_simulation_runtime_test PRIVATE -Wall -Wextra -Wpedantic -Werror)

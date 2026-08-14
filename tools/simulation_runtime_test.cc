@@ -4,6 +4,10 @@
 #include <filesystem>
 #include <iostream>
 
+#include <QApplication>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsScene>
+
 #include "tools/plot_data.h"
 #include "tools/scene_rendering.h"
 #include "tools/simulation_runtime.h"
@@ -355,6 +359,26 @@ void TestSceneRenderingMatchesCollisionGeometry() {
         "vehicle and obstacle outlines must remain one pixel wide while zooming");
   Check(safety_pen.isCosmetic() && safety_pen.style() == Qt::DashLine,
         "safety envelope must use a cosmetic dashed outline");
+
+  QGraphicsScene scene;
+  const avp::Vec2 entry_position{7.0, -3.0};
+  QGraphicsEllipseItem* entry =
+      avp::tools::AddParkingEntryMarker(&scene, entry_position);
+  Check(entry != nullptr, "parking entry marker must be added to a valid scene");
+  CheckNear(entry->rect().width(), avp::tools::kParkingEntryMarkerDiameterPx,
+            "parking entry marker must be eight pixels wide");
+  CheckNear(entry->rect().height(), avp::tools::kParkingEntryMarkerDiameterPx,
+            "parking entry marker must be eight pixels high");
+  CheckNear(entry->rect().center().x(), 0.0,
+            "parking entry marker must be centered on its local origin");
+  CheckNear(entry->rect().center().y(), 0.0,
+            "parking entry marker must be centered on its local origin");
+  CheckNear(entry->pos().x(), entry_position.x,
+            "parking entry marker must preserve the scene x coordinate");
+  CheckNear(entry->pos().y(), -entry_position.y,
+            "parking entry marker must convert the scene y coordinate");
+  Check(entry->flags().testFlag(QGraphicsItem::ItemIgnoresTransformations),
+        "parking entry marker must remain fixed-size while zooming");
 }
 
 void TestEgoHistoryWindow() {
@@ -369,36 +393,33 @@ void TestEgoHistoryWindow() {
         "ego history must retain at least the current sample");
 }
 
-void TestPlanningPlotData() {
-  avp::PlanningDebugData debug;
-  debug.planning_mode = "LANE_APPROACH";
-  debug.cropped_reference_line = {{0.0, 0.0}, {10.0, 0.0}};
-  debug.coupling_iterations.push_back(
-      {{{{2.0, 1.0}, 0.0, 0.0, 0.0}, {{4.0, -1.0}, 0.0, 0.0, 2.0}}, {}, {}});
-  avp::PlanningResponse response;
-  response.trajectory = {{{{0.0, 0.0}, 3.1}, 0.1, 0.0, 0.0, 0.0,
-                          avp::DrivingDirection::kDrive},
-                         {{{1.0, 0.0}, -3.1}, -0.2, 0.0, 0.0, 1.0,
-                          avp::DrivingDirection::kDrive}};
-  const avp::tools::PlanningPlotData plots =
-      avp::tools::BuildPlanningPlotData(debug, response);
-  Check(plots.sl_path.size() == 2 && std::abs(plots.sl_path[0].x - 2.0) < 1e-9 &&
-            std::abs(plots.sl_path[0].y - 1.0) < 1e-9 &&
-            std::abs(plots.sl_path[1].y + 1.0) < 1e-9,
-        "S-L projection must preserve reference progress and lateral sign");
-  Check(plots.st_path.size() == 2 && std::abs(plots.st_path.back().y - 1.0) < 1e-9 &&
-            plots.curvature_by_s.back().y == -0.2,
-        "trajectory plots must use accumulated arc length");
-  Check(plots.yaw_by_s.back().y > plots.yaw_by_s.front().y &&
-            plots.yaw_by_s.back().y - plots.yaw_by_s.front().y < 10.0,
-        "S-yaw must unwrap the pi boundary without a false jump");
+void TestResponseTrajectoryTableData() {
+  Check(avp::tools::BuildResponseTrajectoryRows({}).empty(),
+        "empty planning response must produce an empty trajectory table");
 
-  debug.planning_mode = "OPEN_SPACE_PARKING";
-  const avp::tools::PlanningPlotData parking =
-      avp::tools::BuildPlanningPlotData(debug, response);
-  Check(parking.sl_path.empty() && !parking.sl_empty_message.empty() &&
-            !parking.st_path.empty(),
-        "parking must suppress S-L while retaining trajectory plots");
+  avp::PlanningResponse response;
+  response.trajectory = {{{{1.0, 2.0}, 0.3}, 0.1, 2.0, -0.5, 0.4,
+                          avp::DrivingDirection::kDrive},
+                         {{{3.0, 4.0}, -0.2}, -0.1, 1.0, 0.25, 0.8,
+                          avp::DrivingDirection::kReverse},
+                         {{{5.0, 6.0}, 0.0}, 0.0, 0.0, 0.0, 1.2,
+                          avp::DrivingDirection::kUnknown}};
+  const std::vector<avp::tools::ResponseTrajectoryRow> rows =
+      avp::tools::BuildResponseTrajectoryRows(response);
+  Check(rows.size() == 3, "every response trajectory point must produce one table row");
+  Check(rows[0].index == 0 && rows[0].gear == "D" && rows[1].index == 1 &&
+            rows[1].gear == "R" && rows[2].index == 2 && rows[2].gear == "N",
+        "trajectory table must preserve order and convert every gear value");
+  CheckNear(rows[0].relative_time_s, 0.4,
+            "trajectory table must preserve relative time");
+  CheckNear(rows[0].x_m, 1.0, "trajectory table must preserve x");
+  CheckNear(rows[0].y_m, 2.0, "trajectory table must preserve y");
+  CheckNear(rows[0].yaw_rad, 0.3, "trajectory table must preserve yaw");
+  CheckNear(rows[0].curvature_1pm, 0.1,
+            "trajectory table must preserve curvature");
+  CheckNear(rows[0].speed_mps, 2.0, "trajectory table must preserve speed");
+  CheckNear(rows[0].acceleration_mps2, -0.5,
+            "trajectory table must preserve acceleration");
 }
 
 void TestDriveAndParkScenarioLoads() {
@@ -445,7 +466,9 @@ void TestDriveAndParkScenarioLoads() {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
+  qputenv("QT_QPA_PLATFORM", "offscreen");
+  QApplication application(argc, argv);
   TestKeyframeSamplingAndPrediction();
   TestJsonRoundTrip();
   TestRuntimePlansAndLimitsSpeed();
@@ -458,7 +481,7 @@ int main() {
   TestCollisionNeverPausesSimulation();
   TestSceneRenderingMatchesCollisionGeometry();
   TestEgoHistoryWindow();
-  TestPlanningPlotData();
+  TestResponseTrajectoryTableData();
   TestDriveAndParkScenarioLoads();
   return 0;
 }
