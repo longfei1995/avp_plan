@@ -475,6 +475,34 @@ void TestStaticObstacleAvoidanceScenarioLoads() {
                     }),
         "static-obstacle avoidance scenario must initially detour around the first right-lane "
         "barrier");
+
+  runtime.SetRunning(true);
+  bool planner_remained_feasible = true;
+  bool collision_free = true;
+  bool passed_first_barrier_below = false;
+  bool passed_second_barrier_above = false;
+  while (runtime.simulation_time_s() < 45.0 && runtime.ego().pose.position.x < 78.0) {
+    runtime.Tick();
+    planner_remained_feasible =
+        planner_remained_feasible && runtime.response().status == avp::PlanningStatus::kOk;
+    collision_free = collision_free && runtime.stop_reason() != "simulation collision";
+    const avp::Vec2 position = runtime.ego().pose.position;
+    if (position.x > 19.0 && position.x < 25.0 && position.y < -0.2) {
+      passed_first_barrier_below = true;
+    }
+    if (position.x > 69.0 && position.x < 75.0 && position.y > 0.2) {
+      passed_second_barrier_above = true;
+    }
+  }
+  Check(planner_remained_feasible,
+        "static-obstacle avoidance must not enter a planning fallback while driving");
+  Check(collision_free, "static-obstacle avoidance must remain collision-free in closed loop");
+  Check(runtime.ego().pose.position.x >= 78.0,
+        "static-obstacle avoidance must make progress beyond both barriers");
+  Check(passed_first_barrier_below,
+        "ego must pass below the first upper-side barrier in closed loop");
+  Check(passed_second_barrier_above,
+        "ego must pass above the second lower-side barrier in closed loop");
 }
 }  // namespace
 

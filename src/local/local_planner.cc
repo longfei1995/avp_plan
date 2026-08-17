@@ -105,23 +105,19 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
   if (path == nullptr || error == nullptr || route.reference_line.size() < 2) {
     return false;
   }
-  // 1. 重采样参考线，并把自车作为路径起点
-  // todo 如果全局参考线首点离自车很远，这会产生一条很长的第一段连接线。
-  // 真实工程中通常会先把自车投影到全局参考线上，再截取附近一段参考线，而不是简单插入一个点。
+  // 1. 重采样参考线，并用自车位姿替换投影起点。
+  // 顶层裁剪路线的首点是自车在参考线上的投影。车辆横向绕障后，该投影与自车具有近似
+  // 相同的纵向位置；若把自车额外插在投影点之前，会生成一条近乎横向的极短首段，导致
+  // 曲率约束在下一次滚动规划时错误地判定不可行。
   std::vector<ReferencePoint> reference =
       ResampleReferenceLine(route.reference_line, frame.config.path_step_m);
   if (reference.size() < 2) {
     *error = "reference line has no usable length";
     return false;
   }
-  if (Distance(reference.front().position, frame.ego.pose.position) < 1e-6) {
-    // 严格替换为自车状态
-    reference.front().position = frame.ego.pose.position;
-    reference.front().yaw = frame.ego.pose.yaw;
-    reference.front().s = 0.0;
-  } else {
-    reference.insert(reference.begin(), {frame.ego.pose.position, frame.ego.pose.yaw, 0.0});
-  }
+  reference.front().position = frame.ego.pose.position;
+  reference.front().yaw = frame.ego.pose.yaw;
+  reference.front().s = 0.0;
   for (size_t index = 1; index < reference.size(); ++index) {
     reference[index].s =
         reference[index - 1].s + Distance(reference[index - 1].position, reference[index].position);
@@ -187,8 +183,9 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
           frame.vehicle.max_curvature_1pm * initial_connection_length + 1e-9) {
         continue;
       }
-      // 检查自车在预计到达第 1 点的时刻，是否会与障碍物碰撞。
-      if (!IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, 1))) {
+      // 只有两层时，第 1 点是终点，其输出朝向就是首段方向。更多层时，第 1 点的最终
+      // 朝向要等第 2 点确定后才能用中心差分计算，留到 DP 主循环中检查。
+      if (reference.size() == 2 && !IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, 1))) {
         continue;
       }
       // 横向变化率 dl / ds，表征 “沿参考线前进时，横向偏移改变得有多快”
@@ -220,9 +217,20 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
         for (int next = 0; next < kLateralCount; ++next) {
           const Vec2 delta{positions[layer][next].x - positions[layer - 1][current].x,
                            positions[layer][next].y - positions[layer - 1][current].y};
-          const Pose2d pose{positions[layer][next], std::atan2(delta.y, delta.x)};
-          if (!IsCollisionFree(frame, pose, ArrivalTimeAt(arrival_times, layer))) {
-            // 硬约束：禁止碰撞
+          const Pose2d incoming_pose{positions[layer][next], std::atan2(delta.y, delta.x)};
+          // 输出路径的中间点使用前后点中心差分朝向，因此在 previous/current/next 三点
+          // 都确定时，以完全相同的姿态检查 current。否则 DP 可能接受一条在回溯输出后
+          // 才被判碰撞的路径。
+          const Vec2 centered_delta{positions[layer][next].x - positions[layer - 2][previous].x,
+                                    positions[layer][next].y - positions[layer - 2][previous].y};
+          const Pose2d current_pose{positions[layer - 1][current],
+                                    std::atan2(centered_delta.y, centered_delta.x)};
+          if (!IsCollisionFree(frame, current_pose, ArrivalTimeAt(arrival_times, layer - 1))) {
+            continue;
+          }
+          // 最后一层没有后继点，输出朝向采用入射段方向，在这里一并完成终点检查。
+          if (layer + 1 == reference.size() &&
+              !IsCollisionFree(frame, incoming_pose, ArrivalTimeAt(arrival_times, layer))) {
             continue;
           }
           // 计算current的曲率，也就是 layer-1 层的曲率
@@ -297,15 +305,11 @@ bool LocalPlanner::Plan(const PlanningFrame& frame, const GlobalRoute& route,
     }
     // 取路径上的前后点计算切线方向，保证路径平滑
     const Vec2& before = index == 0 ? position : path->back().position;
-    const Vec2& after = index + 1 < reference.size()
-                            ? positions[index + 1][lateral_indices[index + 1]]
-                            : position;
+    const Vec2& after =
+        index + 1 < reference.size() ? positions[index + 1][lateral_indices[index + 1]] : position;
     // 中间点，使用前后点的中心差分方向， 比如第 1 个点，使用第 0 个点和第 2 个点的方向。
-    const double yaw = index == 0
-                           ? frame.ego.pose.yaw
-                           : (index + 1 < reference.size()
-                                  ? std::atan2(after.y - before.y, after.x - before.x)
-                                  : path->back().yaw);
+    const double yaw =
+        index == 0 ? frame.ego.pose.yaw : std::atan2(after.y - before.y, after.x - before.x);
     path->push_back({position, yaw, 0.0, s});
   }
   // 重新计算输出路径曲率

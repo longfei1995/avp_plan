@@ -217,6 +217,17 @@ void TestLocalPlannerAnchorsEgoPose() {
   frame.vehicle.max_curvature_1pm = 0.1;
   Check(!planner.Plan(frame, route, {}, &path, &error),
         "infeasible ego anchor heading must reject the local path");
+
+  frame.ego.pose = {{4.0, -0.24}, 0.0};
+  frame.vehicle.max_curvature_1pm = 1.0;
+  frame.config.path_step_m = 1.5;
+  route.reference_line = {{4.0, 0.0}, {20.0, 0.0}};
+  Check(planner.Plan(frame, route, {}, &path, &error),
+        "off-center rolling replanning must not create a lateral first segment");
+  CheckPosition(path.front().position, frame.ego.pose.position,
+                "off-center local path must remain anchored at ego position");
+  Check(path.size() > 1 && path[1].position.x > path[0].position.x + 1.0,
+        "off-center local path must connect to a forward reference layer");
 }
 
 void TestOrientedRectangleCollision() {
@@ -252,6 +263,30 @@ void TestSlLattice() {
     }
   }
   Check(detours_around_obstacle, "S-L lattice should choose a lateral detour");
+}
+
+void TestSlLatticeChecksOutputYawForCollision() {
+  avp::PlanningFrame frame;
+  frame.header = {"map", 1'000'000'000, 1};
+  frame.ego.pose = {{6.511, 0.0}, 0.0};
+  frame.config.path_step_m = 1.5;
+  frame.obstacles.push_back(
+      {"barrier", 0.4, 0.2, 1.0, {{{frame.header.timestamp_ns, {{22.0, 1.2}, 0.0}, 0.0}}}});
+  avp::GlobalRoute route;
+  route.reference_line = {{6.511, 0.0}, {25.0, 0.0}, {32.511, 0.0}};
+  avp::LocalPlanner planner;
+  std::vector<avp::PathPoint> path;
+  std::string error;
+
+  Check(planner.Plan(frame, route, {}, &path, &error),
+        "S-L DP must find a path whose output yaw remains collision-free");
+  for (const avp::PathPoint& point : path) {
+    Check(!avp::IsVehicleObstacleCollision({point.position, point.yaw}, frame.vehicle,
+                                           frame.obstacles.front().prediction.front().pose,
+                                           frame.obstacles.front().length_m,
+                                           frame.obstacles.front().width_m),
+          "every selected S-L point must be safe with its exported yaw");
+  }
 }
 
 void TestFirstSlCouplingUsesCurrentObstaclePose() {
@@ -828,6 +863,7 @@ int main() {
   TestPlannerTrajectoryStartsAtEgoPose();
   TestLocalPlannerAnchorsEgoPose();
   TestSlLattice();
+  TestSlLatticeChecksOutputYawForCollision();
   TestFirstSlCouplingUsesCurrentObstaclePose();
   TestAccelerationConstrainedStDp();
   TestJerkUsesInitialAccelerationAndShortHorizons();
