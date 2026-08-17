@@ -1,16 +1,16 @@
+#include "tools/simulation_runtime.h"
+
+#include <QApplication>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsScene>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 
-#include <QApplication>
-#include <QGraphicsEllipseItem>
-#include <QGraphicsScene>
-
 #include "tools/plot_data.h"
 #include "tools/scene_rendering.h"
-#include "tools/simulation_runtime.h"
 
 namespace {
 void Check(bool condition, const char* message) {
@@ -42,8 +42,8 @@ avp::TimedTrajectoryPoint SampleExpectedTrajectory(const avp::PlanningResponse& 
     result.pose.yaw = avp::NormalizeAngle(
         previous.pose.yaw + ratio * avp::NormalizeAngle(next.pose.yaw - previous.pose.yaw));
     result.speed_mps = previous.speed_mps + ratio * (next.speed_mps - previous.speed_mps);
-    result.acceleration_mps2 = previous.acceleration_mps2 +
-                               ratio * (next.acceleration_mps2 - previous.acceleration_mps2);
+    result.acceleration_mps2 =
+        previous.acceleration_mps2 + ratio * (next.acceleration_mps2 - previous.acceleration_mps2);
     result.relative_time_s = relative_time_s;
     result.direction = ratio < 1.0 ? previous.direction : next.direction;
     return result;
@@ -62,9 +62,9 @@ void CheckEgoMatches(const avp::EgoState& ego, const avp::TimedTrajectoryPoint& 
 }
 
 void TestKeyframeSamplingAndPrediction() {
-  avp::tools::ScenarioObstacle obstacle{"walker", 0.6, 0.6, 1.0, true,
-                                         {{0.0, {{0.0, 0.0}, 0.0}, 1.0},
-                                          {2.0, {{2.0, 0.0}, 0.0}, 1.0}}};
+  avp::tools::ScenarioObstacle obstacle{
+      "walker", 0.6,  0.6,
+      1.0,      true, {{0.0, {{0.0, 0.0}, 0.0}, 1.0}, {2.0, {{2.0, 0.0}, 0.0}, 1.0}}};
   Check(std::abs(avp::tools::SampleObstaclePose(obstacle, 1.0).position.x - 1.0) < 1e-9,
         "keyframe pose must interpolate");
   Check(std::abs(avp::tools::SampleObstaclePose(obstacle, 3.0).position.x - 1.0) < 1e-9,
@@ -160,17 +160,16 @@ void TestPerfectTrajectoryTrackingAndRollingReplan() {
 void TestCruiseAndEndpointLiveness() {
   avp::tools::SimulationScenario cruise_scenario = avp::tools::MakeDefaultScenario();
   cruise_scenario.map.lanes = {{"long", {{0.0, 0.0}, {50.0, 0.0}}, {}, false}};
-  cruise_scenario.map.parking_spots = {
-      {"P", {{50.0, 0.0}, 0.0}, {{51.0, 0.0}, 0.0}}};
+  cruise_scenario.map.parking_spots = {{"P", {{50.0, 0.0}, 0.0}, {{51.0, 0.0}, 0.0}}};
   cruise_scenario.target_parking_spot_id = "P";
   avp::tools::SimulationRuntime cruise_runtime(std::move(cruise_scenario));
   cruise_runtime.SetRunning(true);
   while (cruise_runtime.simulation_time_s() < 4.0 - 1e-9) cruise_runtime.Tick();
-  Check(cruise_runtime.response().status == avp::PlanningStatus::kOk &&
-            cruise_runtime.ego().speed_mps >= 2.7 &&
-            cruise_runtime.ego().speed_mps <=
-                cruise_runtime.scenario().vehicle.max_speed_mps + 1e-9,
-        "rolling replanning should reach ninety percent of maximum cruise speed in four seconds");
+  Check(
+      cruise_runtime.response().status == avp::PlanningStatus::kOk &&
+          cruise_runtime.ego().speed_mps >= 2.7 &&
+          cruise_runtime.ego().speed_mps <= cruise_runtime.scenario().vehicle.max_speed_mps + 1e-9,
+      "rolling replanning should reach ninety percent of maximum cruise speed in four seconds");
 
   avp::tools::SimulationRuntime endpoint_runtime(avp::tools::MakeDefaultScenario());
   endpoint_runtime.SetRunning(true);
@@ -194,8 +193,7 @@ void TestCruiseAndEndpointLiveness() {
     if (endpoint_runtime.debug().planning_mode == "OPEN_SPACE_PARKING") {
       entered_parking = true;
       for (const avp::TimedTrajectoryPoint& point : endpoint_runtime.response().trajectory) {
-        Check(point.speed_mps <=
-                  endpoint_runtime.scenario().planner.max_parking_speed_mps + 1e-9,
+        Check(point.speed_mps <= endpoint_runtime.scenario().planner.max_parking_speed_mps + 1e-9,
               "forward open-space parking must respect the general parking speed limit");
       }
     }
@@ -242,8 +240,7 @@ void TestPerfectTrackingPreservesGearShiftDwell() {
 
 void TestSafeFallbackNeverPausesSimulation() {
   avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
-  scenario.obstacles = {
-      {"wall", 1.0, 6.0, 1.0, false, {{0.0, {{5.0, 0.0}, 0.0}, 0.0}}}};
+  scenario.obstacles = {{"wall", 1.0, 6.0, 1.0, false, {{0.0, {{5.0, 0.0}, 0.0}, 0.0}}}};
   avp::tools::SimulationRuntime runtime(std::move(scenario));
 
   Check(runtime.response().status == avp::PlanningStatus::kNoSafeTrajectory,
@@ -267,8 +264,7 @@ void TestSafeFallbackNeverPausesSimulation() {
 void TestMovingFallbackEndsAtRest() {
   avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
   scenario.initial_ego.speed_mps = 1.0;
-  scenario.obstacles = {
-      {"wall", 1.0, 6.0, 1.0, false, {{0.0, {{5.0, 0.0}, 0.0}, 0.0}}}};
+  scenario.obstacles = {{"wall", 1.0, 6.0, 1.0, false, {{0.0, {{5.0, 0.0}, 0.0}, 0.0}}}};
   avp::tools::SimulationRuntime runtime(scenario);
 
   Check(runtime.response().status == avp::PlanningStatus::kNoSafeTrajectory,
@@ -279,19 +275,16 @@ void TestMovingFallbackEndsAtRest() {
   CheckNear(trajectory.back().acceleration_mps2, 0.0,
             "moving fallback must clear acceleration once stopped");
 
-  const double braking_distance =
-      scenario.initial_ego.speed_mps * scenario.initial_ego.speed_mps /
-      (2.0 * scenario.vehicle.max_deceleration_mps2);
+  const double braking_distance = scenario.initial_ego.speed_mps * scenario.initial_ego.speed_mps /
+                                  (2.0 * scenario.vehicle.max_deceleration_mps2);
   double previous_distance = 0.0;
   double previous_speed = trajectory.front().speed_mps;
   for (const avp::TimedTrajectoryPoint& point : trajectory) {
     const double distance = point.pose.position.x - scenario.initial_ego.pose.position.x;
-    Check(distance + 1e-9 >= previous_distance,
-          "moving fallback distance must be monotonic");
+    Check(distance + 1e-9 >= previous_distance, "moving fallback distance must be monotonic");
     Check(distance <= braking_distance + 1e-9,
           "moving fallback must not pass its physical braking endpoint");
-    Check(point.speed_mps <= previous_speed + 1e-9,
-          "moving fallback speed must be monotonic");
+    Check(point.speed_mps <= previous_speed + 1e-9, "moving fallback speed must be monotonic");
     previous_distance = distance;
     previous_speed = point.speed_mps;
   }
@@ -319,8 +312,7 @@ void TestFatalPlanningFailureNeverPausesSimulation() {
 
 void TestCollisionNeverPausesSimulation() {
   avp::tools::SimulationScenario scenario = avp::tools::MakeDefaultScenario();
-  scenario.obstacles = {
-      {"overlap", 1.0, 1.0, 1.0, false, {{0.0, scenario.initial_ego.pose, 0.0}}}};
+  scenario.obstacles = {{"overlap", 1.0, 1.0, 1.0, false, {{0.0, scenario.initial_ego.pose, 0.0}}}};
   avp::tools::SimulationRuntime runtime(std::move(scenario));
   runtime.SetRunning(true);
 
@@ -339,18 +331,15 @@ void TestSceneRenderingMatchesCollisionGeometry() {
   vehicle.safety_margin_m = 0.35;
   const avp::Pose2d pose{{3.0, -1.0}, 0.0};
 
-  const QPolygonF body =
-      avp::tools::OrientedBoxPolygon(pose, vehicle.length_m, vehicle.width_m);
+  const QPolygonF body = avp::tools::OrientedBoxPolygon(pose, vehicle.length_m, vehicle.width_m);
   const QPolygonF safety = avp::tools::VehicleSafetyPolygon(pose, vehicle);
   CheckNear(body.boundingRect().width(), vehicle.length_m,
             "rendered vehicle body must preserve configured length");
   CheckNear(body.boundingRect().height(), vehicle.width_m,
             "rendered vehicle body must preserve configured width");
-  CheckNear(safety.boundingRect().width(),
-            vehicle.length_m + 2.0 * vehicle.safety_margin_m,
+  CheckNear(safety.boundingRect().width(), vehicle.length_m + 2.0 * vehicle.safety_margin_m,
             "rendered safety envelope must expand both longitudinal sides");
-  CheckNear(safety.boundingRect().height(),
-            vehicle.width_m + 2.0 * vehicle.safety_margin_m,
+  CheckNear(safety.boundingRect().height(), vehicle.width_m + 2.0 * vehicle.safety_margin_m,
             "rendered safety envelope must expand both lateral sides");
 
   const QPen body_pen = avp::tools::ThinCosmeticPen(Qt::blue);
@@ -362,8 +351,7 @@ void TestSceneRenderingMatchesCollisionGeometry() {
 
   QGraphicsScene scene;
   const avp::Vec2 entry_position{7.0, -3.0};
-  QGraphicsEllipseItem* entry =
-      avp::tools::AddParkingEntryMarker(&scene, entry_position);
+  QGraphicsEllipseItem* entry = avp::tools::AddParkingEntryMarker(&scene, entry_position);
   Check(entry != nullptr, "parking entry marker must be added to a valid scene");
   CheckNear(entry->rect().width(), avp::tools::kParkingEntryMarkerDiameterPx,
             "parking entry marker must be eight pixels wide");
@@ -398,28 +386,23 @@ void TestResponseTrajectoryTableData() {
         "empty planning response must produce an empty trajectory table");
 
   avp::PlanningResponse response;
-  response.trajectory = {{{{1.0, 2.0}, 0.3}, 0.1, 2.0, -0.5, 0.4,
-                          avp::DrivingDirection::kDrive},
-                         {{{3.0, 4.0}, -0.2}, -0.1, 1.0, 0.25, 0.8,
-                          avp::DrivingDirection::kReverse},
-                         {{{5.0, 6.0}, 0.0}, 0.0, 0.0, 0.0, 1.2,
-                          avp::DrivingDirection::kUnknown}};
+  response.trajectory = {
+      {{{1.0, 2.0}, 0.3}, 0.1, 2.0, -0.5, 0.4, avp::DrivingDirection::kDrive},
+      {{{3.0, 4.0}, -0.2}, -0.1, 1.0, 0.25, 0.8, avp::DrivingDirection::kReverse},
+      {{{5.0, 6.0}, 0.0}, 0.0, 0.0, 0.0, 1.2, avp::DrivingDirection::kUnknown}};
   const std::vector<avp::tools::ResponseTrajectoryRow> rows =
       avp::tools::BuildResponseTrajectoryRows(response);
   Check(rows.size() == 3, "every response trajectory point must produce one table row");
-  Check(rows[0].index == 0 && rows[0].gear == "D" && rows[1].index == 1 &&
-            rows[1].gear == "R" && rows[2].index == 2 && rows[2].gear == "N",
+  Check(rows[0].index == 0 && rows[0].gear == "D" && rows[1].index == 1 && rows[1].gear == "R" &&
+            rows[2].index == 2 && rows[2].gear == "N",
         "trajectory table must preserve order and convert every gear value");
-  CheckNear(rows[0].relative_time_s, 0.4,
-            "trajectory table must preserve relative time");
+  CheckNear(rows[0].relative_time_s, 0.4, "trajectory table must preserve relative time");
   CheckNear(rows[0].x_m, 1.0, "trajectory table must preserve x");
   CheckNear(rows[0].y_m, 2.0, "trajectory table must preserve y");
   CheckNear(rows[0].yaw_rad, 0.3, "trajectory table must preserve yaw");
-  CheckNear(rows[0].curvature_1pm, 0.1,
-            "trajectory table must preserve curvature");
+  CheckNear(rows[0].curvature_1pm, 0.1, "trajectory table must preserve curvature");
   CheckNear(rows[0].speed_mps, 2.0, "trajectory table must preserve speed");
-  CheckNear(rows[0].acceleration_mps2, -0.5,
-            "trajectory table must preserve acceleration");
+  CheckNear(rows[0].acceleration_mps2, -0.5, "trajectory table must preserve acceleration");
 }
 
 void TestDriveAndParkScenarioLoads() {
@@ -439,8 +422,7 @@ void TestDriveAndParkScenarioLoads() {
   runtime.SetRunning(true);
   for (int index = 0; index < 11; ++index) runtime.Tick();
   Check(runtime.simulation_time_s() > 0.2 &&
-            runtime.response().status == avp::PlanningStatus::kOk &&
-            runtime.stop_reason().empty(),
+            runtime.response().status == avp::PlanningStatus::kOk && runtime.stop_reason().empty(),
         "dynamic drive-and-park scenario must remain feasible after its first rolling replan");
 
   bool observed_temporary_fallback = false;
@@ -458,11 +440,41 @@ void TestDriveAndParkScenarioLoads() {
 
   const double recovery_position = runtime.ego().pose.position.x;
   for (int index = 0; index < 20; ++index) runtime.Tick();
-  Check(runtime.response().status == avp::PlanningStatus::kOk &&
-            runtime.ego().speed_mps > 0.0 &&
+  Check(runtime.response().status == avp::PlanningStatus::kOk && runtime.ego().speed_mps > 0.0 &&
             runtime.ego().pose.position.x > recovery_position + 1e-3 &&
             runtime.ego().pose.position.x > position_before_crossing + 1e-3,
         "ego must resume forward motion after the pedestrian clears the lane");
+}
+
+void TestStaticObstacleAvoidanceScenarioLoads() {
+  const std::filesystem::path path =
+      std::filesystem::path(AVP_SOURCE_DIR) / "tools/scenarios/static_obstacle_avoidance_100m.json";
+  avp::tools::SimulationScenario scenario;
+  std::string error;
+  Check(avp::tools::LoadScenarioJson(path.string(), &scenario, &error),
+        "static-obstacle avoidance scenario must load");
+  Check(scenario.map.lanes.size() == 2 && scenario.map.parking_spots.size() == 1 &&
+            scenario.obstacles.size() == 3,
+        "static-obstacle avoidance scenario must provide two lanes, a drive goal, and obstacles");
+  Check(std::all_of(scenario.obstacles.begin(), scenario.obstacles.end(),
+                    [](const avp::tools::ScenarioObstacle& obstacle) {
+                      return obstacle.keyframes.size() == 1 &&
+                             obstacle.keyframes.front().speed_mps == 0.0;
+                    }),
+        "static-obstacle avoidance scenario must contain only static obstacles");
+
+  avp::tools::SimulationRuntime runtime(std::move(scenario));
+  Check(runtime.response().status == avp::PlanningStatus::kOk && runtime.stop_reason().empty(),
+        "static-obstacle avoidance scenario must have a feasible initial plan");
+  const std::vector<avp::PathPoint>& initial_path =
+      runtime.debug().coupling_iterations.back().local_path;
+  Check(std::any_of(initial_path.begin(), initial_path.end(),
+                    [](const avp::PathPoint& point) {
+                      return point.position.x > 19.0 && point.position.x < 24.0 &&
+                             point.position.y < -0.2;
+                    }),
+        "static-obstacle avoidance scenario must initially detour around the first right-lane "
+        "barrier");
 }
 }  // namespace
 
@@ -483,5 +495,6 @@ int main(int argc, char* argv[]) {
   TestEgoHistoryWindow();
   TestResponseTrajectoryTableData();
   TestDriveAndParkScenarioLoads();
+  TestStaticObstacleAvoidanceScenarioLoads();
   return 0;
 }

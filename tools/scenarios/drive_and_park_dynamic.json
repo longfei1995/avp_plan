@@ -96,7 +96,7 @@
                 {
                     "pose": {
                         "x": 10,
-                        "y": 2,
+                        "y": -5,
                         "yaw": 0
                     },
                     "speed_mps": 0,
@@ -111,7 +111,7 @@
     "parking_spots": [
         {
             "entry_pose": {
-                "x": 15,
+                "x": 20,
                 "y": 0,
                 "yaw": 0
             },
