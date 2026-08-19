@@ -45,7 +45,7 @@ cmake --build --preset visualize --target collision_visualizer
 
 ### Qt 闭环仿真器
 
-`avp_qt_simulator` 是一个可选的 Qt 5 Widgets 2D 地图查看与闭环仿真工具。它使用完美轨迹
+`avp_qt_simulator` 是一个可选的 Qt 6 Widgets 2D 地图查看与闭环仿真工具。它使用完美轨迹
 跟踪：每 20 ms 将自车状态直接更新为规划轨迹在下一仿真时刻的插值状态，不模拟真实控制器
 或车辆响应滞后。`Run` 开启连续仿真，`Stop` 是唯一会暂停连续仿真的按钮；运行期间每 0.2 秒
 滚动调用一次 `Planner::Plan()`。`Reset` 恢复到当前地图文件刚加载后的完整初始状态，包括
@@ -57,10 +57,10 @@ cmake --build --preset visualize --target collision_visualizer
 点击 `Stop`，仿真时间、动态障碍物和 5 Hz 滚动重规划都会继续推进；没有可执行轨迹时自车
 保持当前状态，规划恢复后继续跟踪新轨迹。
 
-当前开发环境需要 Qt 5.15 的 Core 和 Widgets 开发包，例如 Debian/Ubuntu：
+当前开发环境需要 Qt 6 的 Core 和 Widgets 开发包，例如 Debian/Ubuntu：
 
 ```bash
-sudo apt install qtbase5-dev
+sudo apt install qt6-base-dev
 cmake -S . -B build/qt -DAVP_BUILD_VISUALIZERS=ON -DAVP_BUILD_TESTS=ON
 cmake --build build/qt --target avp_qt_simulator --parallel
 ./build/qt/tools/avp_qt_simulator

@@ -13,7 +13,7 @@
 生成的 Protobuf C++ 绑定必须输出到构建目录，除非集成需求明确要求，否则不要提交。
 
 核心回归测试位于 `tests/`：`planning_test.cc` 是自包含的可执行测试，
-`collision_test_cases.h` 提供其共享碰撞用例。`tools/` 是可选 Qt 5 Widgets
+`collision_test_cases.h` 提供其共享碰撞用例。`tools/` 是可选 Qt 6 Widgets
 闭环仿真器：`avp_qt_simulator`、其运行时/绘图/场景代码及版本化 JSON 场景均在此处。
 启用工具且启用测试时，`avp_simulation_runtime_test` 会注册到 CTest。构建产物只应位于
 `build/`，不得提交。
@@ -63,7 +63,7 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
-Qt 闭环仿真器是可选依赖，需要 Qt 5.15 的 Core 和 Widgets 开发包。使用 `visualize`
+Qt 闭环仿真器是可选依赖，需要 Qt 6 的 Core 和 Widgets 开发包。使用 `visualize`
 预设会在 `build/visualize` 中启用 `AVP_BUILD_VISUALIZERS`；它构建 `avp_qt_simulator`，并在
 测试开启时同时注册 `avp_simulation_runtime_test`：
 

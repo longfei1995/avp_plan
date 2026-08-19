@@ -1,4 +1,4 @@
-find_package(Qt5 5.15 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
 
 add_executable(avp_qt_simulator
   plot_data.cc
@@ -13,7 +13,7 @@ add_executable(avp_qt_simulator
 )
 set_target_properties(avp_qt_simulator PROPERTIES AUTOMOC ON)
 target_include_directories(avp_qt_simulator PRIVATE ${PROJECT_SOURCE_DIR})
-target_link_libraries(avp_qt_simulator PRIVATE avp::planning Qt5::Core Qt5::Widgets)
+target_link_libraries(avp_qt_simulator PRIVATE avp::planning Qt6::Core Qt6::Widgets)
 target_compile_options(avp_qt_simulator PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 if(AVP_BUILD_TESTS)
@@ -29,7 +29,7 @@ if(AVP_BUILD_TESTS)
     simulation_runtime.h
   )
   target_include_directories(avp_simulation_runtime_test PRIVATE ${PROJECT_SOURCE_DIR})
-  target_link_libraries(avp_simulation_runtime_test PRIVATE avp::planning Qt5::Core Qt5::Widgets)
+  target_link_libraries(avp_simulation_runtime_test PRIVATE avp::planning Qt6::Core Qt6::Widgets)
   target_compile_definitions(avp_simulation_runtime_test
     PRIVATE AVP_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
   target_compile_options(avp_simulation_runtime_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
